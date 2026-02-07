@@ -69,7 +69,44 @@
               <div class="text-center mt-2">
                 <a href="/pharmacist/signup" class="text-small color-fg-blue">Register as Pharmacist</a>
               </div>
+              <div class="text-center mt-2">
+                <button id="forgotToggleBtn" class="btn-link text-small" type="button">Forgot password?</button>
+              </div>
             </form>
+
+            <div id="forgotBox" class="Box p-2 mt-3" hidden>
+              <h3 class="f6 mb-1">Reset password (Email OTP)</h3>
+              <p class="color-fg-muted text-small mb-2">
+                Enter your username/email. We’ll send a 6-digit code to your email if the account has one.
+              </p>
+              <form id="forgotRequestForm" class="d-flex flex-column gap-2">
+                <label class="form-group">
+                  <div class="text-small color-fg-muted">Username or email</div>
+                  <input id="forgot_identifier" class="form-control input-block" placeholder="patient@example.com" />
+                </label>
+                <label class="form-group">
+                  <div class="text-small color-fg-muted">New password</div>
+                  <input id="forgot_new_password" class="form-control input-block" type="password" placeholder="New password (min 8 chars)" />
+                </label>
+                <button id="forgotRequestBtn" class="btn" type="submit">Send code</button>
+              </form>
+
+              <div id="forgotOtpBox" class="mt-2" hidden>
+                <form id="forgotConfirmForm" class="d-flex flex-column gap-2">
+                  <label class="form-group">
+                    <div class="text-small color-fg-muted">OTP</div>
+                    <input id="forgot_otp" class="form-control input-block" inputmode="numeric" placeholder="123456" />
+                  </label>
+                  <div class="d-flex gap-2">
+                    <button id="forgotConfirmBtn" class="btn btn-primary" type="submit">Reset password</button>
+                    <button id="forgotResendBtn" class="btn" type="button">Resend</button>
+                  </div>
+                  <div class="text-small color-fg-muted">
+                    otpRequestId: <span id="forgot_otp_id" class="gz-mono">—</span>
+                  </div>
+                </form>
+              </div>
+            </div>
 
             <div id="otpBox" class="Box p-2 mt-3" hidden>
               <h3 class="f6 mb-1">Email OTP</h3>

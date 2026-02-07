@@ -95,6 +95,52 @@ function looksLikePassword(value) {
   return true;
 }
 
+function hashPasswordScrypt(password) {
+  const salt = crypto.randomBytes(16);
+  const N = 16384;
+  const r = 8;
+  const p = 1;
+  const keyLen = 32;
+  const derived = crypto.scryptSync(String(password), salt, keyLen, { N, r, p });
+  return `scrypt$${N}$${r}$${p}$${salt.toString("base64url")}$${derived.toString("base64url")}`;
+}
+
+function verifyPasswordScrypt(stored, password) {
+  if (!isNonEmptyString(stored)) return false;
+  const s = String(stored);
+  if (!s.startsWith("scrypt$")) return false;
+  const parts = s.split("$");
+  if (parts.length !== 7) return false;
+  const N = Number(parts[1]);
+  const r = Number(parts[2]);
+  const p = Number(parts[3]);
+  const saltB64u = parts[4];
+  const hashB64u = parts[5];
+  const salt = Buffer.from(saltB64u, "base64url");
+  const expected = Buffer.from(hashB64u, "base64url");
+  const derived = crypto.scryptSync(String(password), salt, expected.length, { N, r, p });
+  return crypto.timingSafeEqual(expected, derived);
+}
+
+function verifyPassword(stored, password) {
+  // Backward compatible: support legacy plaintext passwords (demo seeds),
+  // but prefer scrypt-hashed values.
+  if (verifyPasswordScrypt(stored, password)) return true;
+  return String(stored || "") === String(password || "");
+}
+
+function computeRpId({ req }) {
+  // WebAuthn RP ID must be a hostname (no scheme/path).
+  // Prefer PUBLIC_BASE_URL when it's a valid absolute URL; otherwise fall back to request host.
+  try {
+    const u = new URL(PUBLIC_BASE_URL);
+    if (u.hostname) return u.hostname;
+  } catch {
+    // ignore
+  }
+  return req?.hostname || req?.get?.("host") || "localhost";
+}
+
 function safeNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -524,13 +570,27 @@ async function buildApp() {
     const user = await User.findOne({
       $or: [{ username: id }, { email: id }],
     }).lean();
-    if (!user || user.password !== pwd || user.status !== "active") {
+    if (!user || !verifyPassword(user.password, pwd) || user.status !== "active") {
       await auditAppend({
         actor: { identifier: id },
         action: "auth.login_failed",
         details: { reason: "bad_credentials_or_inactive" },
       });
       return res.status(401).json({ error: "invalid_credentials" });
+    }
+
+    // Opportunistic upgrade: if legacy plaintext password was used, replace with scrypt hash.
+    if (isNonEmptyString(user.password) && !String(user.password).startsWith("scrypt$")) {
+      try {
+        await User.updateOne({ id: user.id }, { $set: { password: hashPasswordScrypt(pwd) } });
+        await auditAppend({
+          actor: { userId: user.id, role: user.role, username: user.username },
+          action: "auth.password_upgraded",
+          details: {},
+        });
+      } catch {
+        // ignore upgrade failures (do not block login)
+      }
     }
 
     if (user.role === "patient") {
@@ -1044,6 +1104,86 @@ async function buildApp() {
     res.json({ ok: true });
   }));
 
+  // Forgot password (Email OTP)
+  // Security notes:
+  // - Response is intentionally non-enumerating: unknown users still get {ok:true}.
+  // - OTP is stored hashed (OtpRequest) and expires quickly.
+  app.post("/auth/forgot-password/request", asyncRoute(async (req, res) => {
+    const { identifier, deviceId } = req.body || {};
+    const id = isNonEmptyString(identifier) ? String(identifier).trim() : "";
+    const did = looksLikeDeviceId(deviceId) ? String(deviceId).trim() : getRequestDeviceId(req);
+    if (!isNonEmptyString(id)) return res.status(400).json({ error: "bad_request", message: "identifier required" });
+
+    const user = await User.findOne({ $or: [{ username: id }, { email: id }] }).lean();
+
+    await auditAppend({
+      actor: { identifier: id },
+      action: "auth.password_reset_requested",
+      details: { deviceId: did, hasUser: Boolean(user) },
+    });
+
+    if (!user || user.status !== "active") {
+      return res.json({ ok: true });
+    }
+
+    if (!looksLikeEmail(user.email) || String(user.email).endsWith("@demo.local")) {
+      // Can't deliver OTP without a real email. Still return ok to avoid user enumeration.
+      return res.json({ ok: true });
+    }
+
+    // Simple rate limit per user (MVP): max 5 RESET OTPs in the last hour.
+    const since = new Date(Date.now() - 60 * 60 * 1000);
+    const recent = await OtpRequest.countDocuments({ userId: user.id, purpose: "RESET", createdAt: { $gte: since } });
+    if (recent >= 5) {
+      await auditAppend({
+        actor: { userId: user.id, role: user.role, username: user.username },
+        action: "anomaly.password_reset_rate_limited",
+        details: { countLastHour: recent },
+      });
+      return res.json({ ok: true });
+    }
+
+    const knownDevice = did
+      ? Boolean(await UserLoginDevice.findOne({ userId: user.id, deviceId: did, verifiedAt: { $ne: null } }).lean())
+      : false;
+    if (!knownDevice) {
+      await auditAppend({
+        actor: { userId: user.id, role: user.role, username: user.username },
+        action: "anomaly.password_reset_new_device",
+        details: { deviceId: did },
+      });
+    }
+
+    const otpInfo = await issueOtpRequest({ user, purpose: "RESET", context: { deviceId: did, knownDevice } });
+    return res.json({ ok: true, ...otpInfo });
+  }));
+
+  app.post("/auth/forgot-password/confirm", asyncRoute(async (req, res) => {
+    const { otpRequestId, otp, newPassword } = req.body || {};
+    if (!isNonEmptyString(otpRequestId) || !isNonEmptyString(otp) || !looksLikePassword(newPassword)) {
+      return res.status(400).json({ error: "bad_request", message: "otpRequestId + otp + newPassword required" });
+    }
+
+    const verified = await verifyOtpRequest({ otpRequestId, otp, expectedPurpose: "RESET" });
+    if (!verified.ok) return res.status(verified.status).json(verified.body);
+
+    const user = await User.findOne({ id: verified.request.userId }).lean();
+    if (!user || user.status !== "active") return res.status(404).json({ error: "user_not_found" });
+
+    await User.updateOne({ id: user.id }, { $set: { password: hashPasswordScrypt(newPassword) } });
+
+    // Defensive: revoke trusted-device bypass tokens after password reset.
+    await TrustedDevice.updateMany({ userId: user.id, revokedAt: null }, { $set: { revokedAt: new Date() } });
+
+    await auditAppend({
+      actor: { userId: user.id, role: user.role, username: user.username },
+      action: "auth.password_reset_completed",
+      details: { otpRequestId },
+    });
+
+    return res.json({ ok: true });
+  }));
+
   app.post("/auth/resend-otp", asyncRoute(async (req, res) => {
     const { otpRequestId } = req.body || {};
     if (!isNonEmptyString(otpRequestId)) {
@@ -1143,7 +1283,7 @@ async function buildApp() {
       id: patientId,
       username,
       role: "patient",
-      password,
+      password: hashPasswordScrypt(password),
       status: "active",
       email: looksLikeEmail(email) ? String(email).trim().toLowerCase() : `${username}@demo.local`,
       mfaEnabled: false,
@@ -1277,7 +1417,7 @@ async function buildApp() {
       username: String(username).trim(),
       email: String(email).trim().toLowerCase(),
       role: "pharmacy",
-      password: String(password),
+      password: hashPasswordScrypt(password),
       status: "active",
       mfaEnabled: false,
       mfaMethod: "NONE",
@@ -1354,7 +1494,7 @@ async function buildApp() {
   }));
 
   app.post("/biometric/enroll/start", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
-    const rpId = new URL(PUBLIC_BASE_URL).hostname;
+    const rpId = computeRpId({ req });
     const challenge = crypto.randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
     await WebAuthnChallenge.create({
@@ -1445,7 +1585,7 @@ async function buildApp() {
   }));
 
   app.post("/biometric/verify/start", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
-    const rpId = new URL(PUBLIC_BASE_URL).hostname;
+    const rpId = computeRpId({ req });
     const creds = await Biometric.find({ userId: req.auth.sub, isActive: true }, { _id: 0, credentialIdB64u: 1 }).lean();
     if (!creds.length) return res.status(404).json({ error: "no_biometrics_enrolled" });
 

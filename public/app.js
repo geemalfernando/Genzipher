@@ -288,6 +288,21 @@ function getPendingOtpState() {
   }
 }
 
+function setPendingResetState(state) {
+  if (!state) localStorage.removeItem("gz_pending_reset");
+  else localStorage.setItem("gz_pending_reset", JSON.stringify(state));
+}
+
+function getPendingResetState() {
+  const raw = localStorage.getItem("gz_pending_reset");
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 async function api(path, { method = "GET", body } = {}) {
   const token = getToken();
   const deviceId = getDeviceId();
@@ -328,6 +343,13 @@ function setAccessTab(tab) {
 
   tabLogin.classList.toggle("btn-primary", isLogin);
   tabRegister.classList.toggle("btn-primary", !isLogin);
+}
+
+function toggleForgotBox(force) {
+  const box = $("forgotBox");
+  if (!box) return;
+  const show = typeof force === "boolean" ? force : box.hidden;
+  box.hidden = !show;
 }
 
 // Handle role-based routing
@@ -387,6 +409,14 @@ async function updateAuthUi() {
     if (pending) {
       $("otp_expires").textContent = pending.expiresAt || "—";
       $("otp_sentTo").textContent = pending.sentTo || "—";
+    }
+
+    const pendingReset = getPendingResetState();
+    if (pendingReset?.otpRequestId) {
+      toggleForgotBox(true);
+      $("forgotOtpBox").hidden = false;
+      $("forgot_otp_id").textContent = pendingReset.otpRequestId;
+      if (pendingReset.identifier) $("forgot_identifier").value = pendingReset.identifier;
     }
     return;
   }
@@ -522,6 +552,65 @@ async function onLogout() {
     setToken(null);
     setPendingOtpState(null);
     toast("Logged out", "success");
+  }
+}
+
+async function onForgotRequest(e) {
+  e.preventDefault();
+  try {
+    const identifier = $("forgot_identifier").value.trim();
+    const newPassword = $("forgot_new_password").value;
+    if (!identifier) return toast("Enter your username or email.", "error");
+    if (!newPassword || newPassword.length < 8) return toast("New password must be at least 8 characters.", "error");
+
+    const out = await api("/auth/forgot-password/request", {
+      method: "POST",
+      body: { identifier, deviceId: getDeviceId() },
+    });
+
+    if (out.otpRequestId) {
+      setPendingResetState({ otpRequestId: out.otpRequestId, identifier });
+      $("forgotOtpBox").hidden = false;
+      $("forgot_otp_id").textContent = out.otpRequestId;
+      toast(out.delivery === "email" ? "OTP sent to your email." : "OTP issued. Check server logs (MVP).", "warning");
+    } else {
+      toast("If that account exists and has an email, you’ll receive a code shortly.", "success");
+    }
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function onForgotConfirm(e) {
+  e.preventDefault();
+  try {
+    const pending = getPendingResetState();
+    if (!pending?.otpRequestId) return toast("No pending reset request.", "error");
+    const otp = $("forgot_otp").value.trim();
+    const newPassword = $("forgot_new_password").value;
+    await api("/auth/forgot-password/confirm", {
+      method: "POST",
+      body: { otpRequestId: pending.otpRequestId, otp, newPassword },
+    });
+    setPendingResetState(null);
+    $("forgotOtpBox").hidden = true;
+    $("forgot_otp").value = "";
+    toast("Password reset. You can login now.", "success");
+    $("login_identifier").value = pending.identifier || $("login_identifier").value;
+    $("login_password").value = "";
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function onForgotResend() {
+  const pending = getPendingResetState();
+  if (!pending?.otpRequestId) return toast("No pending reset request.", "error");
+  try {
+    const out = await api("/auth/resend-otp", { method: "POST", body: { otpRequestId: pending.otpRequestId } });
+    toast(`OTP resent (${out.delivery}).`, "success");
+  } catch (err) {
+    toast(err.message, "error");
   }
 }
 
@@ -1482,6 +1571,10 @@ function wire() {
   $("tabRegister").addEventListener("click", () => setAccessTab("register"));
 
   $("loginForm").addEventListener("submit", onLogin);
+  $("forgotToggleBtn")?.addEventListener("click", () => toggleForgotBox());
+  $("forgotRequestForm")?.addEventListener("submit", onForgotRequest);
+  $("forgotConfirmForm")?.addEventListener("submit", onForgotConfirm);
+  $("forgotResendBtn")?.addEventListener("click", onForgotResend);
   $("otpForm").addEventListener("submit", onVerifyOtp);
   $("otpResendBtn").addEventListener("click", onResendOtp);
   $("logoutBtn").addEventListener("click", onLogout);
