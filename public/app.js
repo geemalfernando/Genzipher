@@ -1125,7 +1125,7 @@ async function loadTrustedDevices() {
   if (!out.devices?.length) {
     const opt = document.createElement("option");
     opt.value = "";
-    opt.textContent = "No trusted devices";
+    opt.textContent = "No trusted devices (created only after Email OTP verify + “Trust this device”)";
     select.appendChild(opt);
     return;
   }
