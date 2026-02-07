@@ -130,3 +130,31 @@ export async function sendPrescriptionIssuedEmail({ to, doctorUsername, rx }) {
       `If you did not expect this, contact your clinic.`,
   });
 }
+
+export async function sendAccountActivatedEmail({ to, role }) {
+  const transporter = getMailer();
+  const from = (process.env.FROM_EMAIL || process.env.SMTP_USER || "").trim();
+  if (!from) throw new Error("FROM_EMAIL not set");
+
+  const r = role ? String(role) : "account";
+  await transporter.sendMail({
+    from,
+    to,
+    subject: "Your GenZipher account is activated",
+    text: `Your ${r} account has been activated by an administrator.\n\nYou can now sign in to GenZipher.\n\nIf you did not request this, contact your clinic.`,
+  });
+}
+
+export async function sendAccountDeletedEmail({ to, role }) {
+  const transporter = getMailer();
+  const from = (process.env.FROM_EMAIL || process.env.SMTP_USER || "").trim();
+  if (!from) throw new Error("FROM_EMAIL not set");
+
+  const r = role ? String(role) : "account";
+  await transporter.sendMail({
+    from,
+    to,
+    subject: "Your GenZipher account has been deleted",
+    text: `Your ${r} account deletion request was approved by an administrator.\n\nIf you did not request this, contact support immediately.`,
+  });
+}

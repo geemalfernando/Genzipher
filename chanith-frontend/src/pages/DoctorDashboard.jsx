@@ -349,6 +349,15 @@ export default function DoctorDashboard() {
     navigate('/login')
   }
 
+  const handleRequestAccountDeletion = async () => {
+    try {
+      await api('/account/delete-request', { method: 'POST' })
+      toast('Deletion request sent to admin for approval.', 'warning')
+    } catch (err) {
+      toast(err.message || 'Failed to request deletion', 'error')
+    }
+  }
+
   if (loading && !user) {
     return (
       <div className="patient-dashboard">
@@ -390,6 +399,17 @@ export default function DoctorDashboard() {
               <path d="M16 17H8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
             </svg>
             <span>Prescriptions</span>
+          </button>
+          <button
+            className={`nav-item ${activeSection === 'account' ? 'active' : ''}`}
+            onClick={() => setActiveSection('account')}
+            type="button"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M20 21V19C20 17.9391 19.5786 16.9217 18.8284 16.1716C18.0783 15.4214 17.0609 15 16 15H8C6.93913 15 5.92172 15.4214 5.17157 16.1716C4.42143 16.9217 4 17.9391 4 19V21" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M12 11C14.2091 11 16 9.20914 16 7C16 4.79086 14.2091 3 12 3C9.79086 3 8 4.79086 8 7C8 9.20914 9.79086 11 12 11Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            <span>Account</span>
           </button>
           <button
             className={`nav-item ${activeSection === 'appointments' ? 'active' : ''}`}
@@ -763,6 +783,23 @@ export default function DoctorDashboard() {
                     </table>
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'account' && (
+            <div className="dashboard-section">
+              <div className="section-header">
+                <h1>Account</h1>
+              </div>
+              <div className="healthcare-card">
+                <h2>Account deletion</h2>
+                <p style={{ marginBottom: '1rem', color: 'var(--healthcare-text-muted)' }}>
+                  Request deletion. An admin must approve before your account is removed.
+                </p>
+                <button onClick={handleRequestAccountDeletion} className="btn-danger" type="button">
+                  Request deletion
+                </button>
               </div>
             </div>
           )}

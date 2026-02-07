@@ -54,6 +54,10 @@ export default function AdminDashboard() {
   const [biometricLookup, setBiometricLookup] = useState(null)
   const [biometricSupportLoading, setBiometricSupportLoading] = useState(false)
 
+  // Account requests (no-trust activation + delete approval)
+  const [accountRequests, setAccountRequests] = useState([])
+  const [accountReqLoading, setAccountReqLoading] = useState(false)
+
   useEffect(() => {
     if (!token) {
       navigate('/login')
@@ -62,6 +66,7 @@ export default function AdminDashboard() {
     loadUserData()
     loadSmtpStatus()
     handleLoadPendingPatients()
+    loadAccountRequests()
   }, [token, navigate])
 
   const loadUserData = async () => {
@@ -176,6 +181,47 @@ export default function AdminDashboard() {
       setGeneratedCode(null)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadAccountRequests = async () => {
+    try {
+      setAccountReqLoading(true)
+      const data = await api('/admin/account-requests?status=PENDING&limit=100')
+      setAccountRequests(data.requests || [])
+    } catch (err) {
+      toast(err.message || 'Failed to load account requests', 'error')
+      setAccountRequests([])
+    } finally {
+      setAccountReqLoading(false)
+    }
+  }
+
+  const approveAccountRequest = async (id) => {
+    try {
+      setAccountReqLoading(true)
+      await api(`/admin/account-requests/${encodeURIComponent(id)}/approve`, { method: 'POST' })
+      toast('Approved', 'success')
+      await loadAccountRequests()
+    } catch (err) {
+      toast(err.message || 'Approve failed', 'error')
+    } finally {
+      setAccountReqLoading(false)
+    }
+  }
+
+  const rejectAccountRequest = async (id) => {
+    const ok = window.confirm('Reject this request?')
+    if (!ok) return
+    try {
+      setAccountReqLoading(true)
+      await api(`/admin/account-requests/${encodeURIComponent(id)}/reject`, { method: 'POST' })
+      toast('Rejected', 'warning')
+      await loadAccountRequests()
+    } catch (err) {
+      toast(err.message || 'Reject failed', 'error')
+    } finally {
+      setAccountReqLoading(false)
     }
   }
 
@@ -557,6 +603,93 @@ export default function AdminDashboard() {
                   </div>
                 )}
                 {renderAuditTable(auditLogs)}
+              </div>
+
+              {/* Account approvals (No-Trust) */}
+              <div style={{ marginBottom: '2rem', paddingBottom: '2rem', borderBottom: '1px solid var(--healthcare-border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+                  <h3 style={{ marginBottom: 0, fontSize: '1.125rem', fontWeight: 600 }}>Account approvals (No‑Trust)</h3>
+                  <button onClick={loadAccountRequests} className="btn-secondary" disabled={accountReqLoading}>
+                    Refresh
+                  </button>
+                </div>
+                <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+                  New patient/doctor accounts stay pending until approved. Delete requests also require approval.
+                </p>
+
+                {accountReqLoading ? (
+                  <p className="empty-state">Loading…</p>
+                ) : accountRequests.length === 0 ? (
+                  <p className="empty-state">No pending requests.</p>
+                ) : (
+                  <div style={{ marginTop: '1rem', overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '2px solid var(--healthcare-border)' }}>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Type</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>User</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Role</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Requested</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {accountRequests.map((r) => {
+                          const u = r.user || {}
+                          const displayName = u.username || r.username || r.userId
+                          const email = u.email || r.email
+                          const requestedAt = r.createdAtIso ? new Date(r.createdAtIso).toLocaleString() : '—'
+                          const typeLabel = r.type === 'DELETE' ? 'Delete request' : 'Activate request'
+
+                          return (
+                            <tr key={r.id} style={{ borderBottom: '1px solid var(--healthcare-border)' }}>
+                              <td style={{ padding: '0.75rem' }}>
+                                <span className="status-badge">{typeLabel}</span>
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>
+                                <div style={{ fontWeight: 700 }}>{displayName}</div>
+                                <div style={{ fontFamily: 'monospace', color: 'var(--healthcare-text-muted)', fontSize: '0.8125rem' }}>
+                                  {r.userId}
+                                </div>
+                                {email ? (
+                                  <div style={{ color: 'var(--healthcare-text-muted)', fontSize: '0.8125rem' }}>{email}</div>
+                                ) : null}
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>{u.role || r.role || '—'}</td>
+                              <td style={{ padding: '0.75rem', fontSize: '0.875rem', color: 'var(--healthcare-text-muted)' }}>
+                                {requestedAt}
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>
+                                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                  <button className="btn-primary btn-sm" onClick={() => approveAccountRequest(r.id)} disabled={accountReqLoading}>
+                                    Approve
+                                  </button>
+                                  <button className="btn-secondary btn-sm" onClick={() => rejectAccountRequest(r.id)} disabled={accountReqLoading}>
+                                    Reject
+                                  </button>
+                                  <button
+                                    className="btn-secondary btn-sm"
+                                    type="button"
+                                    onClick={async () => {
+                                      try {
+                                        await navigator.clipboard.writeText(String(r.userId || ''))
+                                        toast('User ID copied', 'success')
+                                      } catch {
+                                        toast('Copy failed', 'error')
+                                      }
+                                    }}
+                                  >
+                                    Copy userId
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
 
               {/* Verify Patients Section */}

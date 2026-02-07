@@ -277,6 +277,15 @@ export default function PatientDashboard() {
     navigate('/login')
   }
 
+  const handleRequestAccountDeletion = async () => {
+    try {
+      await api('/account/delete-request', { method: 'POST' })
+      toast('Deletion request sent to admin for approval.', 'warning')
+    } catch (err) {
+      toast(err.message || 'Failed to request deletion', 'error')
+    }
+  }
+
   if (loading) {
     return (
       <div className="patient-dashboard">
@@ -805,6 +814,16 @@ export default function PatientDashboard() {
               </div>
 
               <div className="section-grid">
+                <div className="healthcare-card">
+                  <h2>Account deletion</h2>
+                  <p style={{ marginBottom: '1rem', color: 'var(--healthcare-text-muted)' }}>
+                    Request deletion. An admin must approve before your account is removed.
+                  </p>
+                  <button onClick={handleRequestAccountDeletion} className="btn-danger">
+                    Request deletion
+                  </button>
+                </div>
+
                 <div className="healthcare-card">
                   <h2>Issue DID</h2>
                   <p style={{ marginBottom: '1rem', color: 'var(--healthcare-text-muted)' }}>Issue</p>

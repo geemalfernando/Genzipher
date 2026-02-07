@@ -32,6 +32,7 @@ import { Dispense } from "./db/models/Dispense.js";
 import { Vitals } from "./db/models/Vitals.js";
 import { AuditMeta } from "./db/models/AuditMeta.js";
 import { AuditEntry } from "./db/models/AuditEntry.js";
+import { AccountRequest } from "./db/models/AccountRequest.js";
 
 import {
   aes256gcmDecrypt,
@@ -50,6 +51,8 @@ import {
   sendClinicCodeEmail,
   sendMagicLinkEmail,
   sendOtpEmail,
+  sendAccountActivatedEmail,
+  sendAccountDeletedEmail,
   sendPrescriptionIssuedEmail,
   verifySmtpConnection,
 } from "./lib/mailer.js";
@@ -329,6 +332,7 @@ async function auditAppend({ actor, action, details }) {
 async function ensureIndexes() {
   await Promise.all([
     User.init(),
+    AccountRequest.init(),
     Assignment.init(),
     Device.init(),
     PatientKey.init(),
@@ -743,13 +747,29 @@ async function buildApp() {
     const user = await User.findOne({
       $or: [{ username: id }, { email: id }],
     }).lean();
-    if (!user || !verifyPassword(user.password, pwd) || user.status !== "active") {
+    if (!user || !verifyPassword(user.password, pwd)) {
       await auditAppend({
         actor: { identifier: id },
         action: "auth.login_failed",
         details: { reason: "bad_credentials_or_inactive" },
       });
       return res.status(401).json({ error: "invalid_credentials" });
+    }
+    if (user.status !== "active") {
+      const err =
+        user.status === "pending"
+          ? "account_pending_admin_approval"
+          : user.status === "blocked"
+            ? "account_blocked"
+            : user.status === "deleted"
+              ? "account_deleted"
+              : "account_inactive";
+      await auditAppend({
+        actor: { userId: user.id, role: user.role, username: user.username },
+        action: "auth.login_blocked",
+        details: { reason: err, status: user.status },
+      });
+      return res.status(403).json({ error: err });
     }
 
     // Opportunistic upgrade: if legacy plaintext password was used, replace with scrypt hash.
@@ -1528,7 +1548,7 @@ async function buildApp() {
         username,
         role: "patient",
         password: hashPasswordScrypt(password),
-        status: "active",
+        status: "pending",
         email: normalizedEmail || `${username}@demo.local`,
         mfaEnabled: false,
         mfaMethod: "NONE",
@@ -1642,14 +1662,111 @@ async function buildApp() {
       },
     });
 
+    // No-trust: require admin approval before account activation.
+    await AccountRequest.create({
+      id: randomId("acctreq"),
+      type: "ACTIVATE",
+      userId: patientId,
+      role: "patient",
+      status: "PENDING",
+      createdAtIso: nowIso(),
+      email: normalizedEmail || `${username}@demo.local`,
+      username,
+    });
+    await auditAppend({
+      actor: { username, role: "patient" },
+      action: "account.activate_requested",
+      details: { userId: patientId, role: "patient" },
+    });
+
     return res.status(201).json({
       patientId,
       status: score >= 80 ? "VERIFIED" : "PENDING",
+      accountStatus: "PENDING_ADMIN_APPROVAL",
       trustScore: score,
       trustExplainTop3: top3,
-      next: score >= 80 ? "login" : "verify_clinic_code",
+      next: "await_admin_approval",
       ...(verification ? { verification } : {}),
     });
+  }));
+
+  // Doctor: create account (pending admin approval)
+  app.post("/doctors/pre-register", asyncRoute(async (req, res) => {
+    const { username, email, password } = req.body || {};
+    if (!looksLikeUsername(username) || !looksLikePassword(password) || !looksLikeEmail(email)) {
+      return res.status(400).json({ error: "bad_request", message: "username + email + password required" });
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const existing = await User.findOne({ $or: [{ username }, { email: normalizedEmail }] }).lean();
+    if (existing) return res.status(409).json({ error: "user_exists" });
+
+    // Generate signing keys (Ed25519) for Rx signing when activated.
+    const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+    const publicKeyPem = publicKey.export({ type: "spki", format: "pem" });
+    const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" });
+
+    const doctorId = randomId("u_doctor");
+    await User.create({
+      id: doctorId,
+      username: String(username).trim(),
+      email: normalizedEmail,
+      role: "doctor",
+      password: hashPasswordScrypt(password),
+      status: "pending",
+      mfaEnabled: true,
+      mfaMethod: "NONE",
+      publicKeyPem,
+      privateKeyPem,
+    });
+
+    await AccountRequest.create({
+      id: randomId("acctreq"),
+      type: "ACTIVATE",
+      userId: doctorId,
+      role: "doctor",
+      status: "PENDING",
+      createdAtIso: nowIso(),
+      email: normalizedEmail,
+      username: String(username).trim(),
+    });
+
+    await auditAppend({
+      actor: { username: String(username).trim(), role: "doctor" },
+      action: "account.activate_requested",
+      details: { userId: doctorId, role: "doctor" },
+    });
+
+    return res.status(201).json({ ok: true, doctorId, accountStatus: "PENDING_ADMIN_APPROVAL", next: "await_admin_approval" });
+  }));
+
+  // User (doctor/patient): request account deletion (admin approval required)
+  app.post("/account/delete-request", requireAuth, requireRole(["doctor", "patient"]), asyncRoute(async (req, res) => {
+    const user = await User.findOne({ id: req.auth.sub }).lean();
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+    if (user.status !== "active") return res.status(403).json({ error: "account_not_active" });
+
+    const existing = await AccountRequest.findOne({ userId: user.id, type: "DELETE", status: "PENDING" }).lean();
+    if (existing) return res.status(409).json({ error: "delete_request_already_pending" });
+
+    const reqId = randomId("acctreq");
+    await AccountRequest.create({
+      id: reqId,
+      type: "DELETE",
+      userId: user.id,
+      role: user.role,
+      status: "PENDING",
+      createdAtIso: nowIso(),
+      email: user.email,
+      username: user.username,
+    });
+    await auditAppend({
+      actor: { userId: user.id, role: user.role, username: user.username },
+      action: "account.delete_requested",
+      details: { requestId: reqId },
+    });
+
+    return res.status(201).json({ ok: true, requestId: reqId, status: "PENDING" });
   }));
 
   // --- Pharmacist (pharmacy role) signup ---
@@ -2212,6 +2329,119 @@ async function buildApp() {
     });
 
     return res.json({ ok: true, deleted: true });
+  }));
+
+  // Admin: account approval queue (no-trust activation + delete requests)
+  app.get("/admin/account-requests", requireAuth, requireRole(["admin"]), asyncRoute(async (req, res) => {
+    const type = isNonEmptyString(req.query?.type) ? String(req.query.type).trim().toUpperCase() : null;
+    const status = isNonEmptyString(req.query?.status) ? String(req.query.status).trim().toUpperCase() : "PENDING";
+    const limit = clampInt(req.query?.limit, { min: 1, max: 200, fallback: 100 });
+
+    const filter = {
+      ...(type ? { type } : {}),
+      ...(status ? { status } : {}),
+    };
+
+    const reqs = await AccountRequest.find(filter, { _id: 0, __v: 0 })
+      .sort({ createdAtIso: -1 })
+      .limit(limit)
+      .lean();
+
+    const userIds = [...new Set(reqs.map((r) => r.userId))];
+    const users = userIds.length
+      ? await User.find({ id: { $in: userIds } }, { _id: 0, id: 1, username: 1, email: 1, role: 1, status: 1 }).lean()
+      : [];
+    const userById = new Map(users.map((u) => [u.id, u]));
+
+    res.json({
+      ok: true,
+      count: reqs.length,
+      requests: reqs.map((r) => ({ ...r, user: userById.get(r.userId) || null })),
+    });
+  }));
+
+  app.post("/admin/account-requests/:id/approve", requireAuth, requireRole(["admin"]), asyncRoute(async (req, res) => {
+    const id = String(req.params?.id || "").trim();
+    const note = isNonEmptyString(req.body?.note) ? String(req.body.note).trim().slice(0, 200) : null;
+    const ar = await AccountRequest.findOne({ id }).lean();
+    if (!ar) return res.status(404).json({ error: "request_not_found" });
+    if (ar.status !== "PENDING") return res.status(409).json({ error: "request_already_decided", status: ar.status });
+
+    const user = await User.findOne({ id: ar.userId }).lean();
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+
+    if (ar.type === "ACTIVATE") {
+      await User.updateOne({ id: user.id }, { $set: { status: "active" } });
+      await auditAppend({
+        actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+        action: "admin.account_activated",
+        details: { userId: user.id, role: user.role },
+      });
+
+      if (isSmtpEnabled() && looksLikeEmail(user.email) && !String(user.email).endsWith("@demo.local")) {
+        try {
+          await sendAccountActivatedEmail({ to: user.email, role: user.role });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(err);
+        }
+      }
+    } else if (ar.type === "DELETE") {
+      await User.updateOne({ id: user.id }, { $set: { status: "deleted" } });
+      await auditAppend({
+        actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+        action: "admin.account_deleted",
+        details: { userId: user.id, role: user.role },
+      });
+      if (isSmtpEnabled() && looksLikeEmail(user.email) && !String(user.email).endsWith("@demo.local")) {
+        try {
+          await sendAccountDeletedEmail({ to: user.email, role: user.role });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(err);
+        }
+      }
+    } else {
+      return res.status(400).json({ error: "unsupported_request_type", type: ar.type });
+    }
+
+    await AccountRequest.updateOne(
+      { id },
+      { $set: { status: "APPROVED", decidedAtIso: nowIso(), decidedBy: req.auth.sub, note } }
+    );
+
+    res.json({ ok: true });
+  }));
+
+  app.post("/admin/account-requests/:id/reject", requireAuth, requireRole(["admin"]), asyncRoute(async (req, res) => {
+    const id = String(req.params?.id || "").trim();
+    const note = isNonEmptyString(req.body?.note) ? String(req.body.note).trim().slice(0, 200) : null;
+    const ar = await AccountRequest.findOne({ id }).lean();
+    if (!ar) return res.status(404).json({ error: "request_not_found" });
+    if (ar.status !== "PENDING") return res.status(409).json({ error: "request_already_decided", status: ar.status });
+
+    await AccountRequest.updateOne(
+      { id },
+      { $set: { status: "REJECTED", decidedAtIso: nowIso(), decidedBy: req.auth.sub, note } }
+    );
+
+    // For activation rejects, block the account to prevent login.
+    if (ar.type === "ACTIVATE") {
+      await User.updateOne({ id: ar.userId }, { $set: { status: "blocked" } });
+      await auditAppend({
+        actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+        action: "admin.account_activation_rejected",
+        details: { userId: ar.userId, role: ar.role, note },
+      });
+    } else if (ar.type === "DELETE") {
+      await auditAppend({
+        actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+        action: "admin.account_delete_rejected",
+        details: { userId: ar.userId, role: ar.role, note },
+      });
+    }
+
+    res.json({ ok: true });
   }));
 
   // Admin: unlock password reset after OTP lockout

@@ -4,3 +4,4 @@ node_modules/
 .firebase/
 *.log
 Readme.md
+web/

@@ -29,7 +29,7 @@ const UserSchema = new mongoose.Schema(
     passwordResetLockedAt: { type: Date, default: null, index: true },
     passwordResetLockedReason: { type: String, default: null },
     passwordResetLockedBy: { type: String, default: null },
-    status: { type: String, required: true, enum: ["active", "blocked"], default: "active", index: true },
+    status: { type: String, required: true, enum: ["pending", "active", "blocked", "deleted"], default: "active", index: true },
     publicKeyPem: { type: String, default: null },
     privateKeyPem: { type: String, default: null },
   },

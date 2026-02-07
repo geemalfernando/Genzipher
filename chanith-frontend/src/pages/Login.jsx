@@ -81,6 +81,10 @@ export default function Login() {
       throw new Error(data.message || data.error || 'Login failed')
     } catch (err) {
       console.error('Login error:', err)
+      if (err.message && err.message.includes('account_pending_admin_approval')) {
+        toast('Account pending admin approval. You will receive an email once activated.', 'warning')
+        return
+      }
       // Check if patient needs clinic code verification
       if (err.message && err.message.includes('patient_not_verified')) {
         setShowClinicCode(true)

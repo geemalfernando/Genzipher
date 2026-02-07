@@ -67,12 +67,31 @@ export default function Signup() {
         })
 
         if (result.patientId) {
-          toast('Account created successfully! Please login.', 'success')
+          const parts = []
+          parts.push('Account created.')
+          if (result.accountStatus === 'PENDING_ADMIN_APPROVAL') {
+            parts.push('Pending admin approval (you will receive an email when activated).')
+          }
+          if (result.status === 'PENDING' && result.verification?.required) {
+            parts.push('Clinic verification required (check your email/console for the code).')
+          }
+          toast(parts.join(' '), result.accountStatus === 'PENDING_ADMIN_APPROVAL' ? 'warning' : 'success')
           navigate('/login')
         }
       } else if (selectedRole === 'doctor') {
-        toast('Doctor signup is not enabled in this MVP. Use the seeded demo doctor account (doctor1).', 'warning')
-        navigate('/login')
+        // Doctor registration (admin approval required)
+        result = await api('/doctors/pre-register', {
+          method: 'POST',
+          body: {
+            username: formData.username,
+            password: formData.password,
+            email: formData.email,
+          },
+        })
+        if (result.ok) {
+          toast('Doctor account created. Pending admin approval (you will receive an email when activated).', 'warning')
+          navigate('/login')
+        }
       }
     } catch (err) {
       toast(err.message || 'Registration failed. Please try again.', 'error')
