@@ -144,6 +144,30 @@ function computeRpId({ req }) {
   return req?.hostname || req?.get?.("host") || "localhost";
 }
 
+function bytesFromUnknown(value) {
+  // Accept several formats commonly produced by WebAuthn client code.
+  // - Array of numbers (Uint8Array serialized via Array.from)
+  // - base64url string
+  // - ArrayBuffer / Uint8Array (should not happen after JSON, but handle anyway)
+  if (Array.isArray(value)) {
+    return Buffer.from(Uint8Array.from(value));
+  }
+  if (typeof value === "string" && value.trim()) {
+    try {
+      return Buffer.from(value.trim(), "base64url");
+    } catch {
+      return null;
+    }
+  }
+  if (value && typeof value === "object") {
+    // ArrayBuffer
+    if (value instanceof ArrayBuffer) return Buffer.from(new Uint8Array(value));
+    // Uint8Array
+    if (value instanceof Uint8Array) return Buffer.from(value);
+  }
+  return null;
+}
+
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
   if (value && typeof value === "object" && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)) {
@@ -1694,37 +1718,50 @@ async function buildApp() {
     if (!latest) return res.status(400).json({ error: "challenge_missing" });
     if (String(challenge) !== String(latest.challenge)) return res.status(401).json({ error: "challenge_mismatch" });
 
-    const rawIdArr = Array.isArray(credential.rawId) ? credential.rawId : [];
-    const credIdB64u = rawIdArr.length ? Buffer.from(rawIdArr).toString("base64url") : null;
+    const rawIdBuf = bytesFromUnknown(credential.rawId) || bytesFromUnknown(credential.rawIdB64u) || bytesFromUnknown(credential.id);
+    const credIdB64u = rawIdBuf ? rawIdBuf.toString("base64url") : null;
     if (!isNonEmptyString(credIdB64u)) return res.status(400).json({ error: "bad_request", message: "credential.rawId required" });
 
     const existing = await Biometric.findOne({ credentialIdB64u: credIdB64u }).lean();
-    if (existing) return res.status(409).json({ error: "credential_exists", message: "This biometric credential is already enrolled" });
+    if (existing) {
+      // Idempotent: if this same user already enrolled this credential, treat as success.
+      if (existing.userId === req.auth.sub && existing.isActive) {
+        return res.status(200).json({ ok: true, alreadyEnrolled: true });
+      }
+      return res.status(409).json({ error: "credential_exists", message: "This biometric credential is already enrolled" });
+    }
 
-    const attObj = Array.isArray(credential?.response?.attestationObject) ? credential.response.attestationObject : [];
-    const cdj = Array.isArray(credential?.response?.clientDataJSON) ? credential.response.clientDataJSON : [];
+    const attObjBuf = bytesFromUnknown(credential?.response?.attestationObject);
+    const cdjBuf = bytesFromUnknown(credential?.response?.clientDataJSON);
+    if (!attObjBuf || !cdjBuf) return res.status(400).json({ error: "bad_request", message: "credential.response fields required" });
     const publicKeyJson = JSON.stringify({
       id: credential.id || credIdB64u,
-      rawId: rawIdArr,
+      rawId: rawIdBuf ? Array.from(rawIdBuf) : [],
       type: credential.type || "public-key",
       response: {
-        attestationObject: Buffer.from(attObj).toString("base64url"),
-        clientDataJSON: Buffer.from(cdj).toString("base64url"),
+        attestationObject: attObjBuf.toString("base64url"),
+        clientDataJSON: cdjBuf.toString("base64url"),
       },
     });
 
-    await Biometric.create({
-      id: randomId("bio"),
-      userId: req.auth.sub,
-      role: "pharmacy",
-      credentialIdB64u: credIdB64u,
-      publicKeyJson,
-      counter: 0,
-      deviceName: isNonEmptyString(deviceName) ? String(deviceName).trim().slice(0, 64) : "Biometric Device",
-      enrolledAt: new Date(),
-      lastUsedAt: null,
-      isActive: true,
-    });
+    try {
+      await Biometric.create({
+        id: randomId("bio"),
+        userId: req.auth.sub,
+        role: "pharmacy",
+        credentialIdB64u: credIdB64u,
+        publicKeyJson,
+        counter: 0,
+        deviceName: isNonEmptyString(deviceName) ? String(deviceName).trim().slice(0, 64) : "Biometric Device",
+        enrolledAt: new Date(),
+        lastUsedAt: null,
+        isActive: true,
+      });
+    } catch (err) {
+      // Avoid leaking DB internals to clients, but do return a meaningful reason for common cases.
+      if (String(err?.code) === "11000") return res.status(409).json({ error: "credential_exists" });
+      throw err;
+    }
 
     await Promise.all([
       User.updateOne({ id: req.auth.sub }, { $set: { biometricEnrolled: true, biometricEnrolledAt: new Date() } }),
@@ -1779,8 +1816,8 @@ async function buildApp() {
     if (!latest) return res.status(400).json({ error: "challenge_missing" });
     if (String(challenge) !== String(latest.challenge)) return res.status(401).json({ error: "challenge_mismatch" });
 
-    const rawIdArr = Array.isArray(credential.rawId) ? credential.rawId : [];
-    const credIdB64u = rawIdArr.length ? Buffer.from(rawIdArr).toString("base64url") : null;
+    const rawIdBuf = bytesFromUnknown(credential.rawId) || bytesFromUnknown(credential.rawIdB64u) || bytesFromUnknown(credential.id);
+    const credIdB64u = rawIdBuf ? rawIdBuf.toString("base64url") : null;
     if (!isNonEmptyString(credIdB64u)) return res.status(400).json({ error: "bad_request", message: "credential.rawId required" });
 
     const enrolled = await Biometric.findOne({ userId: req.auth.sub, credentialIdB64u: credIdB64u, isActive: true }).lean();

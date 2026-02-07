@@ -268,10 +268,15 @@ export default function Signup() {
                   type="text"
                   className="auth-form-input"
                   value={formData.username}
-                  onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+                  onChange={(e) => {
+                    const cleaned = String(e.target.value || '')
+                      .replace(/[^A-Za-z0-9._-]/g, '')
+                      .slice(0, 32)
+                    setFormData({ ...formData, username: cleaned })
+                  }}
                   placeholder="Enter your username"
                   required
-                  pattern="[a-zA-Z0-9._-]{3,32}"
+                  maxLength={32}
                 />
                 <small className="auth-form-hint">
                   3-32 characters, letters/numbers/._-

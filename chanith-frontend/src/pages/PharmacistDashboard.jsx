@@ -127,9 +127,9 @@ export default function PharmacistDashboard() {
 
       if (result.ok) {
         setBiometricEnrolled(true)
-        setBiometricVerified(true)
-        toast('Biometric enrolled successfully!', 'success')
-        loadDashboard()
+        setBiometricVerified(false)
+        toast(result.alreadyEnrolled ? 'Biometric already enrolled on this account. Please verify to continue.' : 'Biometric enrolled. Please verify to continue.', result.alreadyEnrolled ? 'warning' : 'success')
+        await checkBiometricStatus()
       }
     } catch (err) {
       console.error('Biometric enrollment error:', err)
@@ -152,6 +152,10 @@ export default function PharmacistDashboard() {
         method: 'POST'
       })
 
+      if (!verifyOptions?.challenge || !Array.isArray(verifyOptions?.allowCredentials)) {
+        throw new Error('internal_error')
+      }
+
       const challengeBuffer = Uint8Array.from(
         atob(verifyOptions.challenge.replace(/-/g, '+').replace(/_/g, '/')), 
         c => c.charCodeAt(0)
@@ -161,7 +165,7 @@ export default function PharmacistDashboard() {
         challenge: challengeBuffer,
         allowCredentials: verifyOptions.allowCredentials.map(cred => ({
           ...cred,
-          id: Uint8Array.from(atob(cred.id.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))
+          id: Uint8Array.from(atob(String(cred.id || '').replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))
         })),
         timeout: verifyOptions.timeout,
         rpId: verifyOptions.rpId,
@@ -189,7 +193,7 @@ export default function PharmacistDashboard() {
       const result = await api('/biometric/verify/complete', {
         method: 'POST',
         body: {
-          assertion: assertionForServer,
+          credential: assertionForServer,
           challenge: verifyOptions.challenge,
         },
       })
@@ -485,4 +489,3 @@ export default function PharmacistDashboard() {
     </div>
   )
 }
-

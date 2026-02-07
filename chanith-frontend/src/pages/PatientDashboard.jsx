@@ -32,6 +32,9 @@ export default function PatientDashboard() {
   // Device
   const [deviceId, setDeviceId] = useState(null)
   const [trustedDevices, setTrustedDevices] = useState([])
+  const [loginDevices, setLoginDevices] = useState([])
+  const [loginDevicesUserMeta, setLoginDevicesUserMeta] = useState(null)
+  const [removeTrustedState, setRemoveTrustedState] = useState({ step: 'idle', otpRequestId: null, deviceId: '', otp: '' })
   
   // DID & Data Key
   const [did, setDid] = useState(null)
@@ -54,6 +57,7 @@ export default function PatientDashboard() {
       await loadDoctors()
       await loadAppointments()
       await loadTrustedDevices()
+      await loadLoginDevices()
     } catch (err) {
       console.error('Load initial data error:', err)
       // Silently fail - don't break the UI
@@ -103,6 +107,45 @@ export default function PatientDashboard() {
     } catch (err) {
       console.error('Trusted devices load error:', err)
       setTrustedDevices([])
+    }
+  }
+
+  const loadLoginDevices = async () => {
+    try {
+      const data = await api('/auth/login-devices')
+      setLoginDevices(data.devices || [])
+      setLoginDevicesUserMeta(data.user || null)
+    } catch (err) {
+      console.error('Login devices load error:', err)
+      setLoginDevices([])
+      setLoginDevicesUserMeta(null)
+    }
+  }
+
+  const requestRemoveTrustedDevice = async (deviceId) => {
+    try {
+      const out = await api('/auth/trusted-devices/remove/request', {
+        method: 'POST',
+        body: { deviceId },
+      })
+      setRemoveTrustedState({ step: 'otp', otpRequestId: out.otpRequestId, deviceId, otp: '' })
+      toast(out.delivery === 'email' ? 'OTP sent to your email. Enter it to confirm removal.' : 'OTP issued (MVP). Check server logs.', 'warning')
+    } catch (err) {
+      toast(err.message || 'Failed to start removal', 'error')
+    }
+  }
+
+  const confirmRemoveTrustedDevice = async () => {
+    try {
+      const { otpRequestId, otp } = removeTrustedState
+      if (!otpRequestId) return toast('No pending removal request', 'error')
+      if (!otp || otp.trim().length !== 6) return toast('Enter the 6-digit OTP', 'error')
+      await api('/auth/trusted-devices/remove/confirm', { method: 'POST', body: { otpRequestId, otp } })
+      toast('Trusted device removed', 'success')
+      setRemoveTrustedState({ step: 'idle', otpRequestId: null, deviceId: '', otp: '' })
+      await loadTrustedDevices()
+    } catch (err) {
+      toast(err.message || 'Failed to remove trusted device', 'error')
     }
   }
 
@@ -427,11 +470,16 @@ export default function PatientDashboard() {
                   <pre>{JSON.stringify({
                     username: user?.username || '—',
                     email: user?.email || '—',
+                    status: profile?.status || '—',
+                    trustScore: profile?.trustScore ?? null,
+                    trustExplainTop3: profile?.trustExplainTop3 || [],
+                    did: profile?.did || null,
+                    patientToken: patientToken || null,
                     mfaEnabled: user?.mfaEnabled || false,
                     mfaMethod: user?.mfaMethod || 'NONE',
-                    createdFromDeviceId: null,
-                    lastLoginDeviceId: deviceId || '—',
-                    lastLoginAt: new Date().toISOString()
+                    createdFromDeviceId: loginDevicesUserMeta?.createdFromDeviceId || null,
+                    lastLoginDeviceId: loginDevicesUserMeta?.lastLoginDeviceId || null,
+                    lastLoginAt: loginDevicesUserMeta?.lastLoginAt || null,
                   }, null, 2)}</pre>
                 </div>
               </div>
@@ -506,11 +554,18 @@ export default function PatientDashboard() {
                     <div className="devices-list">
                       {trustedDevices.map((device, idx) => (
                         <div key={idx} className="device-item">
-                          <span>{device.deviceId}</span>
+                          <span style={{ fontFamily: 'monospace' }}>{device.deviceId}</span>
                           <span className="device-date">
                             last {new Date(device.lastUsedAt).toLocaleDateString()}, {new Date(device.lastUsedAt).toLocaleTimeString()}
                             {' '}expires {new Date(device.expiresAt).toLocaleDateString()}
                           </span>
+                          <button
+                            onClick={() => requestRemoveTrustedDevice(device.deviceId)}
+                            className="btn-danger"
+                            style={{ marginLeft: 'auto', padding: '0.35rem 0.75rem', fontSize: '0.8125rem' }}
+                          >
+                            Remove (email OTP)
+                          </button>
                         </div>
                       ))}
                     </div>
@@ -523,6 +578,33 @@ export default function PatientDashboard() {
                     </svg>
                     Refresh
                   </button>
+
+                  {removeTrustedState.step === 'otp' && (
+                    <div className="healthcare-card" style={{ marginTop: '1rem', background: 'var(--healthcare-bg)' }}>
+                      <h3 style={{ marginBottom: '0.5rem' }}>Confirm removal</h3>
+                      <p style={{ marginBottom: '0.75rem', color: 'var(--healthcare-text-muted)' }}>
+                        Enter the OTP sent to your email to remove: <span style={{ fontFamily: 'monospace' }}>{removeTrustedState.deviceId}</span>
+                      </p>
+                      <div className="form-group">
+                        <label>OTP</label>
+                        <input
+                          type="text"
+                          className="form-input"
+                          value={removeTrustedState.otp}
+                          onChange={(e) => setRemoveTrustedState((s) => ({ ...s, otp: e.target.value }))}
+                          placeholder="123456"
+                          inputMode="numeric"
+                        />
+                      </div>
+                      <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                        <button onClick={confirmRemoveTrustedDevice} className="btn-primary">Confirm</button>
+                        <button onClick={() => setRemoveTrustedState({ step: 'idle', otpRequestId: null, deviceId: '', otp: '' })} className="btn-secondary">Cancel</button>
+                      </div>
+                      <p style={{ marginTop: '0.75rem', fontSize: '0.875rem', color: 'var(--healthcare-text-muted)' }}>
+                        otpRequestId: <span style={{ fontFamily: 'monospace' }}>{removeTrustedState.otpRequestId}</span>
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="healthcare-card">
@@ -534,6 +616,38 @@ export default function PatientDashboard() {
                     <strong>Device ID:</strong> {deviceId || '—'}
                   </p>
                   <button onClick={handleBindDevice} className="btn-primary">Bind/Verify now</button>
+                </div>
+
+                <div className="healthcare-card">
+                  <h2>Login Devices</h2>
+                  <p style={{ marginBottom: '1rem', color: 'var(--healthcare-text-muted)' }}>
+                    Devices seen for your account (used for “new device” step-up verification)
+                  </p>
+                  {loginDevices.length === 0 ? (
+                    <p className="empty-state">No login devices recorded</p>
+                  ) : (
+                    <div className="devices-list">
+                      {loginDevices.map((d, idx) => (
+                        <div key={idx} className="device-item">
+                          <span style={{ fontFamily: 'monospace' }}>{d.deviceId}</span>
+                          <span className="device-date">
+                            first {d.firstSeenAt ? new Date(d.firstSeenAt).toLocaleString() : '—'} • last {d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : '—'}
+                          </span>
+                          <span className="appointment-status" style={{ marginLeft: 'auto' }}>
+                            {d.verifiedAt ? 'VERIFIED' : (d.blockedAt ? 'BLOCKED' : 'SEEN')}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <button onClick={loadLoginDevices} className="refresh-btn" style={{ marginTop: '1rem' }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M1 4V10H7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      <path d="M23 20V14H17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10M23 14L18.36 18.36A9 9 0 0 1 3.51 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                    Refresh
+                  </button>
                 </div>
               </div>
             </div>
@@ -575,4 +689,3 @@ export default function PatientDashboard() {
     </div>
   )
 }
-

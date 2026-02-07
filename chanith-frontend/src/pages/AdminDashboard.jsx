@@ -17,6 +17,7 @@ export default function AdminDashboard() {
   })
   const [auditLogs, setAuditLogs] = useState([])
   const [auditLogsJson, setAuditLogsJson] = useState(null)
+  const [showUserAuditJson, setShowUserAuditJson] = useState(false)
 
   // Verify Patients
   const [pendingPatients, setPendingPatients] = useState([])
@@ -37,6 +38,7 @@ export default function AdminDashboard() {
   // System Audit
   const [systemAuditLogs, setSystemAuditLogs] = useState([])
   const [systemAuditJson, setSystemAuditJson] = useState(null)
+  const [showSystemAuditJson, setShowSystemAuditJson] = useState(false)
 
   useEffect(() => {
     if (!token) {
@@ -45,6 +47,7 @@ export default function AdminDashboard() {
     }
     loadUserData()
     loadSmtpStatus()
+    handleLoadPendingPatients()
   }, [token, navigate])
 
   const loadUserData = async () => {
@@ -96,11 +99,8 @@ export default function AdminDashboard() {
   }
 
   const handleShowUserActivityJson = () => {
-    if (auditLogsJson) {
-      alert(JSON.stringify(auditLogsJson, null, 2))
-    } else {
-      toast('Please load logs first', 'warning')
-    }
+    if (!auditLogsJson) return toast('Please load logs first', 'warning')
+    setShowUserAuditJson((v) => !v)
   }
 
   const handleCopyUserActivityJson = async () => {
@@ -121,6 +121,11 @@ export default function AdminDashboard() {
       setLoading(true)
       const data = await api('/admin/patients?status=PENDING')
       setPendingPatients(data.patients || [])
+      if ((data.patients || []).length > 0 && !selectedPatientId) {
+        const first = data.patients[0].patientId
+        setSelectedPatientId(first)
+        setClinicCodeData((v) => ({ ...v, patientId: first }))
+      }
       toast(`Loaded ${data.count || 0} pending patients`, 'success')
     } catch (err) {
       toast(err.message || 'Failed to load pending patients', 'error')
@@ -131,17 +136,26 @@ export default function AdminDashboard() {
   }
 
   const handleGenerateClinicCode = async () => {
+    if (!clinicCodeData.patientId || !String(clinicCodeData.patientId).trim()) {
+      toast('Select a patientId before generating a clinic code', 'error')
+      return
+    }
+    if (sendEmail && !String(clinicCodeData.patientId).trim()) {
+      toast('patientId is required to email the code', 'error')
+      return
+    }
     try {
       setLoading(true)
       const data = await api('/clinic/codes', {
         method: 'POST',
         body: {
-          patientId: clinicCodeData.patientId || null,
+          patientId: String(clinicCodeData.patientId).trim(),
           expiresMinutes: Number(clinicCodeData.expiresMinutes) || 10,
           sendEmail: sendEmail
         }
       })
       setGeneratedCode(data)
+      if (data.warning) toast(data.warning, 'warning')
       toast('Clinic code generated successfully!', 'success')
     } catch (err) {
       toast(err.message || 'Failed to generate clinic code', 'error')
@@ -149,6 +163,45 @@ export default function AdminDashboard() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const renderAuditTable = (entries) => {
+    if (!entries || entries.length === 0) {
+      return <p className="empty-state" style={{ marginTop: '1rem' }}>No entries yet.</p>
+    }
+    return (
+      <div style={{ marginTop: '1rem', overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom: '2px solid var(--healthcare-border)' }}>
+              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Time</th>
+              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Action</th>
+              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Actor</th>
+              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.slice(0, 200).map((e, idx) => (
+              <tr key={idx} style={{ borderBottom: '1px solid var(--healthcare-border)' }}>
+                <td style={{ padding: '0.75rem', fontSize: '0.875rem', color: 'var(--healthcare-text-muted)' }}>
+                  {e.ts ? new Date(e.ts).toLocaleString() : '—'}
+                </td>
+                <td style={{ padding: '0.75rem', fontSize: '0.875rem' }}>
+                  <span className="status-badge">{e.action || '—'}</span>
+                </td>
+                <td style={{ padding: '0.75rem', fontSize: '0.875rem' }}>
+                  {(e.actor?.username || e.actor?.identifier || e.actor?.userId || '—')}{' '}
+                  {e.actor?.role ? `(${e.actor.role})` : ''}
+                </td>
+                <td style={{ padding: '0.75rem', fontSize: '0.875rem', color: 'var(--healthcare-text-muted)' }}>
+                  {e.details ? JSON.stringify(e.details).slice(0, 220) : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )
   }
 
   const handleCopyGeneratedCode = async () => {
@@ -211,11 +264,8 @@ export default function AdminDashboard() {
   }
 
   const handleShowSystemAuditJson = () => {
-    if (systemAuditJson) {
-      alert(JSON.stringify(systemAuditJson, null, 2))
-    } else {
-      toast('Please load audit logs first', 'warning')
-    }
+    if (!systemAuditJson) return toast('Please load audit logs first', 'warning')
+    setShowSystemAuditJson((v) => !v)
   }
 
   const handleCopySystemAuditJson = async () => {
@@ -322,17 +372,32 @@ export default function AdminDashboard() {
                     Load logs
                   </button>
                   <button onClick={handleShowUserActivityJson} className="btn-secondary">
-                    Show JSON
+                    {showUserAuditJson ? 'Hide JSON' : 'Show JSON'}
                   </button>
                   <button onClick={handleCopyUserActivityJson} className="btn-secondary">
                     Copy JSON
                   </button>
                 </div>
+                {showUserAuditJson && auditLogsJson && (
+                  <pre
+                    style={{
+                      marginTop: '1rem',
+                      padding: '1rem',
+                      background: 'var(--healthcare-bg)',
+                      borderRadius: '8px',
+                      overflowX: 'auto',
+                      fontSize: '0.8125rem',
+                    }}
+                  >
+                    {JSON.stringify(auditLogsJson, null, 2)}
+                  </pre>
+                )}
                 {auditLogs.length > 0 && (
                   <div style={{ marginTop: '1rem', fontSize: '0.875rem', color: 'var(--healthcare-text-muted)' }}>
                     Loaded {auditLogs.length} log entries
                   </div>
                 )}
+                {renderAuditTable(auditLogs)}
               </div>
 
               {/* Verify Patients Section */}
@@ -409,6 +474,14 @@ export default function AdminDashboard() {
                 </button>
                 {generatedCode && (
                   <div style={{ marginTop: '1rem', padding: '1rem', background: 'var(--healthcare-bg)', borderRadius: '8px' }}>
+                    {generatedCode.warning && (
+                      <div className="auth-alert auth-alert-warning" style={{ marginBottom: '1rem' }}>
+                        <div className="alert-content">
+                          <strong>Delivery warning</strong>
+                          <p>{generatedCode.warning}</p>
+                        </div>
+                      </div>
+                    )}
                     <div style={{ marginBottom: '0.75rem' }}>
                       <label className="form-label">Generated code</label>
                       <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -476,17 +549,32 @@ export default function AdminDashboard() {
                     Load latest 200
                   </button>
                   <button onClick={handleShowSystemAuditJson} className="btn-secondary">
-                    Show JSON
+                    {showSystemAuditJson ? 'Hide JSON' : 'Show JSON'}
                   </button>
                   <button onClick={handleCopySystemAuditJson} className="btn-secondary">
                     Copy JSON
                   </button>
                 </div>
+                {showSystemAuditJson && systemAuditJson && (
+                  <pre
+                    style={{
+                      marginTop: '1rem',
+                      padding: '1rem',
+                      background: 'var(--healthcare-bg)',
+                      borderRadius: '8px',
+                      overflowX: 'auto',
+                      fontSize: '0.8125rem',
+                    }}
+                  >
+                    {JSON.stringify(systemAuditJson, null, 2)}
+                  </pre>
+                )}
                 {systemAuditLogs.length > 0 && (
                   <div style={{ marginTop: '1rem', fontSize: '0.875rem', color: 'var(--healthcare-text-muted)' }}>
                     Loaded {systemAuditLogs.length} system audit entries
                   </div>
                 )}
+                {renderAuditTable(systemAuditLogs)}
               </div>
             </div>
           </div>
@@ -495,4 +583,3 @@ export default function AdminDashboard() {
     </div>
   )
 }
-

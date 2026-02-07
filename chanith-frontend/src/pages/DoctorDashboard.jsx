@@ -8,6 +8,7 @@ export default function DoctorDashboard() {
   const navigate = useNavigate()
   const { token, logout } = useAuth()
   const [loading, setLoading] = useState(false)
+  const [activeSection, setActiveSection] = useState('prescriptions')
   
   // Patient selection
   const [patients, setPatients] = useState([])
@@ -23,6 +24,10 @@ export default function DoctorDashboard() {
   const [signedPrescription, setSignedPrescription] = useState('')
   const [verificationResult, setVerificationResult] = useState('')
   const [user, setUser] = useState(null)
+
+  // Appointments (doctor view)
+  const [doctorAppointments, setDoctorAppointments] = useState([])
+  const [apptFilter, setApptFilter] = useState({ status: '', date: '' })
 
   useEffect(() => {
     if (!token) {
@@ -85,6 +90,24 @@ export default function DoctorDashboard() {
     } catch (err) {
       // Silently fail - doctors can still type medicine names manually
       setMedicines([])
+    }
+  }
+
+  const loadDoctorAppointments = async () => {
+    try {
+      setLoading(true)
+      const params = new URLSearchParams()
+      if (apptFilter.status) params.set('status', apptFilter.status)
+      if (apptFilter.date) params.set('date', apptFilter.date)
+      const qs = params.toString()
+      const data = await api(`/doctor/appointments${qs ? `?${qs}` : ''}`)
+      setDoctorAppointments(data.appointments || [])
+      toast(`Loaded ${data.count || 0} appointments`, 'success')
+    } catch (err) {
+      toast(err.message || 'Failed to load appointments', 'error')
+      setDoctorAppointments([])
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -285,7 +308,10 @@ export default function DoctorDashboard() {
         </div>
 
         <nav className="patient-sidebar-nav">
-          <button className="nav-item active">
+          <button
+            className={`nav-item ${activeSection === 'prescriptions' ? 'active' : ''}`}
+            onClick={() => setActiveSection('prescriptions')}
+          >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M14 2H6C5.46957 2 4.96086 2.21071 4.58579 2.58579C4.21071 2.96086 4 3.46957 4 4V20C4 20.5304 4.21071 21.0391 4.58579 21.4142C4.96086 21.7893 5.46957 22 6 22H18C18.5304 22 19.0391 21.7893 19.4142 21.4142C19.7893 21.0391 20 20.5304 20 20V8L14 2Z" stroke="currentColor" strokeWidth="2"/>
               <path d="M14 2V8H20" stroke="currentColor" strokeWidth="2"/>
@@ -293,6 +319,18 @@ export default function DoctorDashboard() {
               <path d="M16 17H8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
             </svg>
             <span>Prescriptions</span>
+          </button>
+          <button
+            className={`nav-item ${activeSection === 'appointments' ? 'active' : ''}`}
+            onClick={() => setActiveSection('appointments')}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M8 2V6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <path d="M16 2V6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <path d="M3 10H21" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <path d="M19 4H5C3.89543 4 3 4.89543 3 6V20C3 21.1046 3.89543 22 5 22H19C20.1046 22 21 21.1046 21 20V6C21 4.89543 20.1046 4 19 4Z" stroke="currentColor" strokeWidth="2"/>
+            </svg>
+            <span>Appointments</span>
           </button>
         </nav>
 
@@ -310,6 +348,7 @@ export default function DoctorDashboard() {
 
       <main className="patient-main">
         <div className="patient-content">
+          {activeSection === 'prescriptions' && (
           <div className="dashboard-section">
             <div className="section-header">
               <div>
@@ -356,25 +395,25 @@ export default function DoctorDashboard() {
                   <button onClick={handleAddMedicine} className="btn-primary" style={{ whiteSpace: 'nowrap' }}>
                     Create Rx
                   </button>
-                  <button onClick={searchPatients} className="btn-secondary" style={{ whiteSpace: 'nowrap' }}>
-                    Search Patients
-                  </button>
                 </div>
               </div>
 
-              {patientSearchQuery && (
-                <div style={{ marginBottom: '1.5rem' }}>
+              <div style={{ marginBottom: '1.25rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div className="form-group" style={{ flex: 1, minWidth: '220px' }}>
+                  <label className="form-group-label">Search patients</label>
                   <input
                     type="text"
                     className="form-input"
                     value={patientSearchQuery}
                     onChange={(e) => setPatientSearchQuery(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && searchPatients()}
-                    placeholder="Search patients (min 2 characters)..."
-                    style={{ marginBottom: '0.5rem' }}
+                    onKeyDown={(e) => e.key === 'Enter' && searchPatients()}
+                    placeholder="Type at least 2 characters..."
                   />
                 </div>
-              )}
+                <button onClick={searchPatients} className="btn-secondary" style={{ whiteSpace: 'nowrap' }}>
+                  Search Patients
+                </button>
+              </div>
             </div>
 
             <div className="healthcare-card" style={{ marginBottom: '2rem' }}>
@@ -490,6 +529,93 @@ export default function DoctorDashboard() {
               />
             </div>
           </div>
+          )}
+
+          {activeSection === 'appointments' && (
+            <div className="dashboard-section">
+              <div className="section-header">
+                <div>
+                  <h1>Appointments</h1>
+                  <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.9375rem' }}>
+                    Patients can book appointments; doctors see assigned appointments here.
+                  </p>
+                </div>
+              </div>
+
+              <div className="healthcare-card" style={{ marginBottom: '2rem' }}>
+                <h2>My appointments</h2>
+                <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">Status (optional)</label>
+                    <select
+                      className="form-input"
+                      value={apptFilter.status}
+                      onChange={(e) => setApptFilter((v) => ({ ...v, status: e.target.value }))}
+                    >
+                      <option value="">All</option>
+                      <option value="REQUESTED">REQUESTED</option>
+                      <option value="CONFIRMED">CONFIRMED</option>
+                      <option value="CANCELLED">CANCELLED</option>
+                      <option value="COMPLETED">COMPLETED</option>
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Date (optional)</label>
+                    <input
+                      type="date"
+                      className="form-input"
+                      value={apptFilter.date}
+                      onChange={(e) => setApptFilter((v) => ({ ...v, date: e.target.value }))}
+                    />
+                  </div>
+                </div>
+
+                <button onClick={loadDoctorAppointments} className="btn-primary" disabled={loading}>
+                  {loading ? 'Loading…' : 'Load appointments'}
+                </button>
+
+                {doctorAppointments.length === 0 ? (
+                  <p className="empty-state" style={{ marginTop: '1rem' }}>
+                    No appointments found.
+                  </p>
+                ) : (
+                  <div style={{ marginTop: '1rem', overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '2px solid var(--healthcare-border)' }}>
+                          <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600 }}>When</th>
+                          <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600 }}>Patient</th>
+                          <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600 }}>Status</th>
+                          <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600 }}>Notes</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {doctorAppointments.map((a) => (
+                          <tr key={a.id} style={{ borderBottom: '1px solid var(--healthcare-border)' }}>
+                            <td style={{ padding: '1rem', fontSize: '0.9rem' }}>
+                              {a.appointmentDate} {a.appointmentTime ? `@ ${a.appointmentTime}` : ''}
+                            </td>
+                            <td style={{ padding: '1rem', fontSize: '0.9rem' }}>
+                              {a.patient?.username ? `${a.patient.username} ` : ''}
+                              <span style={{ fontFamily: 'monospace', color: 'var(--healthcare-text-muted)' }}>
+                                ({a.patientId})
+                              </span>
+                            </td>
+                            <td style={{ padding: '1rem', fontSize: '0.9rem' }}>
+                              <span className="appointment-status">{a.status}</span>
+                            </td>
+                            <td style={{ padding: '1rem', fontSize: '0.9rem', color: 'var(--healthcare-text-muted)' }}>
+                              {a.notes || '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </main>
     </div>

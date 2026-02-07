@@ -27,9 +27,16 @@ export function computeApiBase() {
   const host = window.location.hostname;
   const isFirebaseHost = host.endsWith(".web.app") || host.endsWith(".firebaseapp.com");
   const isVercelHost = host.endsWith(".vercel.app");
+  const isLocalhost =
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "0.0.0.0" ||
+    host === "::1";
 
   if (isFirebaseHost) return "https://genzipher.vercel.app/api";
   if (isVercelHost) return `${window.location.origin}/api`;
+  // Local dev default: use Vite dev server + proxy at `/api` to avoid CORS.
+  if (isLocalhost) return `${window.location.origin}/api`;
   return "";
 }
 
@@ -183,4 +190,3 @@ export function toast(message, type = "info") {
     toastEl.remove();
   }, 5000);
 }
-

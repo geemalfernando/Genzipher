@@ -6,33 +6,12 @@ export default defineConfig({
   server: {
     port: 3001,
     proxy: {
-      '/auth': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
-      '/pharmacy': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
-      '/pharmacist': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
-      '/biometric': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
-      '/demo': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
-      '/health': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
       '/api': {
         target: 'http://localhost:3000',
         changeOrigin: true,
+        // Local backend routes are mounted at `/...` (no `/api` prefix).
+        // Keep frontend calls consistent with production by using `/api/...` in dev.
+        rewrite: (path) => path.replace(/^\/api/, ''),
       },
     },
   },
