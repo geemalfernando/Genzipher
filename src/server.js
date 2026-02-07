@@ -1825,6 +1825,8 @@ async function buildApp() {
           details: { credentialId: credIdB64u, deletedBiometricId: existing.id },
         });
       } else {
+        // eslint-disable-next-line no-console
+        console.log(`[BIOMETRIC] credential_exists credentialId=${credIdB64u} ownerUserId=${existing.userId}`);
         return res.status(409).json({
           error: "credential_exists",
           credentialIdB64u: credIdB64u,
@@ -2162,6 +2164,54 @@ async function buildApp() {
         },
       });
     }
+  }));
+
+  // Admin: biometric lookup (debug/support) and delete (clear stale enrollments)
+  app.get("/admin/biometrics/lookup", requireAuth, requireRole(["admin"]), asyncRoute(async (req, res) => {
+    const credentialIdB64u = isNonEmptyString(req.query?.credentialIdB64u) ? String(req.query.credentialIdB64u).trim() : "";
+    if (!isNonEmptyString(credentialIdB64u)) {
+      return res.status(400).json({ error: "bad_request", message: "credentialIdB64u query param required" });
+    }
+
+    const bio = await Biometric.findOne({ credentialIdB64u }, { _id: 0, __v: 0 }).lean();
+    if (!bio) return res.json({ ok: true, found: false });
+
+    const owner = await User.findOne({ id: bio.userId }, { _id: 0, id: 1, username: 1, role: 1, status: 1, email: 1 }).lean();
+    return res.json({
+      ok: true,
+      found: true,
+      biometric: {
+        id: bio.id,
+        userId: bio.userId,
+        role: bio.role,
+        credentialIdB64u: bio.credentialIdB64u,
+        deviceName: bio.deviceName || null,
+        enrolledAt: bio.enrolledAt ? new Date(bio.enrolledAt).toISOString() : null,
+        isActive: bio.isActive !== false,
+      },
+      owner: owner
+        ? { id: owner.id, username: owner.username, role: owner.role, status: owner.status, email: owner.email }
+        : null,
+    });
+  }));
+
+  app.post("/admin/biometrics/delete", requireAuth, requireRole(["admin"]), asyncRoute(async (req, res) => {
+    const credentialIdB64u = isNonEmptyString(req.body?.credentialIdB64u) ? String(req.body.credentialIdB64u).trim() : "";
+    if (!isNonEmptyString(credentialIdB64u)) {
+      return res.status(400).json({ error: "bad_request", message: "credentialIdB64u required" });
+    }
+
+    const existing = await Biometric.findOne({ credentialIdB64u }).lean();
+    if (!existing) return res.json({ ok: true, deleted: false });
+
+    await Biometric.deleteOne({ id: existing.id });
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+      action: "admin.biometric_deleted",
+      details: { credentialIdB64u, deletedBiometricId: existing.id, deletedUserId: existing.userId },
+    });
+
+    return res.json({ ok: true, deleted: true });
   }));
 
   // Admin: unlock password reset after OTP lockout

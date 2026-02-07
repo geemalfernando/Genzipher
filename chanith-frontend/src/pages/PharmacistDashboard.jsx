@@ -136,7 +136,9 @@ export default function PharmacistDashboard() {
       console.error('Biometric enrollment error:', err)
       setBiometricError(err.message || 'Biometric enrollment failed')
       if (String(err?.message || '') === 'credential_exists') {
-        toast('This device biometric is already enrolled on another pharmacy account. Login to that account, or enroll using a different device/browser.', 'warning')
+        const cid = err?.data?.credentialIdB64u
+        toast('This device biometric is already enrolled for another account. Use a different browser profile/device, or ask admin to clear it.', 'warning')
+        if (cid) setBiometricError(`credential_exists (${cid})`)
       } else {
         toast(err.message || 'Biometric enrollment failed', 'error')
       }
