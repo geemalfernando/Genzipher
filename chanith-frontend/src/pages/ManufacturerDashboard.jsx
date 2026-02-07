@@ -55,7 +55,7 @@ export default function ManufacturerDashboard() {
         body: batchForm
       })
       
-      toast('Batch registered successfully!', 'success')
+      toast('Batch Secured & Signed ✓', 'success')
       setBatchForm({ batchId: '', lot: '', expiry: '', certificateHash: '' })
       setBatches([result, ...batches])
     } catch (err) {
@@ -89,9 +89,9 @@ export default function ManufacturerDashboard() {
       
       setVerificationResult(result)
       if (result.ok && result.signatureOk && !result.expired) {
-        toast('Batch verified successfully!', 'success')
+        toast('Verified ✓', 'success')
       } else {
-        toast('Batch verification failed', 'error')
+        toast('Verification failed ✗', 'error')
       }
     } catch (err) {
       toast(err.message || 'Failed to verify batch', 'error')
@@ -159,7 +159,7 @@ export default function ManufacturerDashboard() {
               <div className="healthcare-card">
                 <h2>Register New Batch</h2>
                 <p style={{ color: 'var(--healthcare-text-muted)', marginBottom: '1.5rem', fontSize: '0.875rem' }}>
-                  Register a new medicine batch with cryptographic signature
+                  Register a new medicine batch. It will be secured and signed to prevent tampering.
                 </p>
                 <form onSubmit={handleRegisterBatch} className="appointment-form">
                   <div className="form-group">
@@ -200,12 +200,12 @@ export default function ManufacturerDashboard() {
                       type="text"
                       value={batchForm.certificateHash}
                       onChange={(e) => setBatchForm({ ...batchForm, certificateHash: e.target.value })}
-                      placeholder="Certificate hash (SHA256)"
+                      placeholder="Certificate hash"
                       required
                       className="form-input"
                     />
                     <small style={{ color: 'var(--healthcare-text-muted)', fontSize: '0.75rem', marginTop: '0.25rem', display: 'block' }}>
-                      Hash of the batch certificate document
+                      Integrity proof for the batch certificate document
                     </small>
                   </div>
                   <button type="submit" className="btn-primary" disabled={loading}>
@@ -217,7 +217,7 @@ export default function ManufacturerDashboard() {
               <div className="healthcare-card">
                 <h2>Verify Batch</h2>
                 <p style={{ color: 'var(--healthcare-text-muted)', marginBottom: '1.5rem', fontSize: '0.875rem' }}>
-                  Verify a batch certificate signature and expiry
+                  Verify the batch (signature + expiry) before it can be dispensed.
                 </p>
                 <form onSubmit={handleVerifyBatch} className="appointment-form">
                   <div className="form-group">
@@ -258,4 +258,3 @@ export default function ManufacturerDashboard() {
     </div>
   )
 }
-

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../utils/AuthContext'
 import { api, toast, getDeviceId } from '../utils/api'
+import { base64UrlToUint8Array, arrayBufferToBytes } from '../utils/webauthn'
 
 export default function PharmacistSignup() {
   const navigate = useNavigate()
@@ -55,8 +56,8 @@ export default function PharmacistSignup() {
       headers: { 'Authorization': `Bearer ${token}` },
     })
 
-    const challengeBuffer = Uint8Array.from(atob(enrollmentOptions.challenge.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))
-    const userIdBuffer = Uint8Array.from(atob(enrollmentOptions.user.id.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))
+    const challengeBuffer = base64UrlToUint8Array(enrollmentOptions?.challenge)
+    const userIdBuffer = base64UrlToUint8Array(enrollmentOptions?.user?.id)
 
     const publicKeyCredentialCreationOptions = {
       challenge: challengeBuffer,
@@ -80,10 +81,10 @@ export default function PharmacistSignup() {
 
     const credentialForServer = {
       id: credential.id,
-      rawId: Array.from(new Uint8Array(credential.rawId)),
+      rawId: arrayBufferToBytes(credential.rawId),
       response: {
-        attestationObject: Array.from(new Uint8Array(credential.response.attestationObject)),
-        clientDataJSON: Array.from(new Uint8Array(credential.response.clientDataJSON)),
+        attestationObject: arrayBufferToBytes(credential.response.attestationObject),
+        clientDataJSON: arrayBufferToBytes(credential.response.clientDataJSON),
       },
       type: credential.type,
     }

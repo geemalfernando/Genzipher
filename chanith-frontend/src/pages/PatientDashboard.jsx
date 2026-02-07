@@ -35,6 +35,11 @@ export default function PatientDashboard() {
   const [loginDevices, setLoginDevices] = useState([])
   const [loginDevicesUserMeta, setLoginDevicesUserMeta] = useState(null)
   const [removeTrustedState, setRemoveTrustedState] = useState({ step: 'idle', otpRequestId: null, deviceId: '', otp: '' })
+
+  // Prescription wallet
+  const [wallet, setWallet] = useState([])
+  const [walletJson, setWalletJson] = useState(null)
+  const [showWalletJson, setShowWalletJson] = useState(false)
   
   // DID & Data Key
   const [did, setDid] = useState(null)
@@ -56,6 +61,7 @@ export default function PatientDashboard() {
       await loadProfile()
       await loadDoctors()
       await loadAppointments()
+      await loadWallet()
       await loadTrustedDevices()
       await loadLoginDevices()
     } catch (err) {
@@ -97,6 +103,18 @@ export default function PatientDashboard() {
       setAppointments(data.appointments || [])
     } catch (err) {
       console.error('Appointments load error:', err)
+    }
+  }
+
+  const loadWallet = async () => {
+    try {
+      const data = await api('/patients/wallet')
+      setWallet(data.items || [])
+      setWalletJson(data)
+    } catch (err) {
+      console.error('Wallet load error:', err)
+      setWallet([])
+      setWalletJson(null)
     }
   }
 
@@ -309,6 +327,17 @@ export default function PatientDashboard() {
             </svg>
             <span>Profile</span>
           </button>
+          <button
+            className={`nav-item ${activeSection === 'wallet' ? 'active' : ''}`}
+            onClick={() => setActiveSection('wallet')}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M21 7H3V5C3 3.89543 3.89543 3 5 3H19C20.1046 3 21 3.89543 21 5V7Z" stroke="currentColor" strokeWidth="2"/>
+              <path d="M3 7H21V19C21 20.1046 20.1046 21 19 21H5C3.89543 21 3 20.1046 3 19V7Z" stroke="currentColor" strokeWidth="2"/>
+              <path d="M17 15H19" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+            <span>Wallet</span>
+          </button>
           <button 
             className={`nav-item ${activeSection === 'security' ? 'active' : ''}`}
             onClick={() => setActiveSection('security')}
@@ -447,6 +476,120 @@ export default function PatientDashboard() {
                   )}
                 </div>
               </div>
+            </div>
+          )}
+
+          {activeSection === 'wallet' && (
+            <div className="dashboard-section">
+              <div className="section-header">
+                <div>
+                  <h1>Prescription Wallet</h1>
+                  <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.9375rem' }}>
+                    Active prescriptions with status (Valid/Used/Expired) and a QR payload for pharmacy verification.
+                  </p>
+                </div>
+                <button onClick={loadWallet} className="refresh-btn">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M1 4V10H7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M23 20V14H17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10M23 14L18.36 18.36A9 9 0 0 1 3.51 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  Refresh
+                </button>
+              </div>
+
+              <div className="healthcare-card" style={{ marginBottom: '1.25rem' }}>
+                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <button onClick={() => setShowWalletJson((v) => !v)} className="btn-secondary" type="button">
+                    {showWalletJson ? 'Hide JSON' : 'View JSON'}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!walletJson) return toast('Nothing to copy', 'warning')
+                      await navigator.clipboard.writeText(JSON.stringify(walletJson, null, 2))
+                      toast('JSON copied', 'success')
+                    }}
+                    className="btn-secondary"
+                    type="button"
+                  >
+                    Copy JSON
+                  </button>
+                </div>
+                {showWalletJson && (
+                  <pre style={{ marginTop: '1rem', whiteSpace: 'pre-wrap', fontSize: '0.85rem' }}>
+                    {JSON.stringify(walletJson, null, 2)}
+                  </pre>
+                )}
+              </div>
+
+              {wallet.length === 0 ? (
+                <div className="healthcare-card">
+                  <p className="empty-state">No prescriptions yet.</p>
+                </div>
+              ) : (
+                <div className="section-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
+                  {wallet.map((item) => {
+                    const status = item.status || '—'
+                    const statusColor =
+                      status === 'VALID'
+                        ? 'var(--healthcare-success)'
+                        : status === 'USED'
+                          ? 'var(--healthcare-warning)'
+                          : status === 'EXPIRED'
+                            ? 'var(--healthcare-danger)'
+                            : 'var(--healthcare-border)'
+                    return (
+                      <div key={item.rxId || item.id} className="healthcare-card">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'baseline' }}>
+                          <h2 style={{ margin: 0, fontSize: '1.1rem' }}>{item.medicineId || 'Prescription'}</h2>
+                          <span className="appointment-status" style={{ borderColor: statusColor, color: statusColor }}>
+                            {status}
+                          </span>
+                        </div>
+
+                        <div style={{ marginTop: '0.75rem', fontSize: '0.95rem' }}>
+                          <div><strong>Dosage:</strong> {item.dosage || '—'}</div>
+                          <div><strong>Duration:</strong> {item.durationDays ? `${item.durationDays} days` : '—'}</div>
+                          <div><strong>Expires:</strong> {item.expiry ? new Date(item.expiry).toLocaleString() : '—'}</div>
+                          {item.usedAt && <div><strong>Used:</strong> {new Date(item.usedAt).toLocaleString()}</div>}
+                          <div style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+                            Verification: {item.checks?.signatureOk ? 'Verified ✓' : 'Unverified ✗'}
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '1rem' }}>
+                          <button
+                            className="btn-primary"
+                            type="button"
+                            onClick={async () => {
+                              if (!item.qrPayload) return toast('No QR payload', 'warning')
+                              await navigator.clipboard.writeText(item.qrPayload)
+                              toast('QR payload copied (paste into pharmacy verify)', 'success')
+                            }}
+                          >
+                            Copy QR payload
+                          </button>
+                          <button
+                            className="btn-secondary"
+                            type="button"
+                            onClick={async () => {
+                              await navigator.clipboard.writeText(JSON.stringify(item, null, 2))
+                              toast('Copied', 'success')
+                            }}
+                          >
+                            Copy details
+                          </button>
+                        </div>
+
+                        <details style={{ marginTop: '0.75rem' }}>
+                          <summary style={{ cursor: 'pointer', color: 'var(--healthcare-text-muted)' }}>Show QR payload</summary>
+                          <pre style={{ whiteSpace: 'pre-wrap', fontSize: '0.85rem' }}>{item.qrPayload || '—'}</pre>
+                        </details>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )}
 

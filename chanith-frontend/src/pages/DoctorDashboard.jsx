@@ -8,12 +8,13 @@ export default function DoctorDashboard() {
   const navigate = useNavigate()
   const { token, logout } = useAuth()
   const [loading, setLoading] = useState(false)
-  const [activeSection, setActiveSection] = useState('prescriptions')
+  const [activeSection, setActiveSection] = useState('dashboard')
   
   // Patient selection
   const [patients, setPatients] = useState([])
   const [selectedPatient, setSelectedPatient] = useState('')
   const [patientSearchQuery, setPatientSearchQuery] = useState('')
+  const [assignedCases, setAssignedCases] = useState([])
   
   // Medicine search
   const [medicineSearchQuery, setMedicineSearchQuery] = useState('')
@@ -24,10 +25,17 @@ export default function DoctorDashboard() {
   const [signedPrescription, setSignedPrescription] = useState('')
   const [verificationResult, setVerificationResult] = useState('')
   const [user, setUser] = useState(null)
+  const [recentPrescriptions, setRecentPrescriptions] = useState([])
+  const [alerts, setAlerts] = useState([])
 
   // Appointments (doctor view)
   const [doctorAppointments, setDoctorAppointments] = useState([])
   const [apptFilter, setApptFilter] = useState({ status: '', date: '' })
+
+  // Vitals viewer
+  const [selectedPatientToken, setSelectedPatientToken] = useState('')
+  const [vitalsRecords, setVitalsRecords] = useState([])
+  const [vitalsBreakGlass, setVitalsBreakGlass] = useState(false)
 
   useEffect(() => {
     if (!token) {
@@ -45,6 +53,7 @@ export default function DoctorDashboard() {
         loadPatients(),
         loadMedicines()
       ])
+      await loadDoctorDashboard()
     } catch (err) {
       console.error('Load initial data error:', err)
     } finally {
@@ -72,6 +81,44 @@ export default function DoctorDashboard() {
     } catch (err) {
       console.error('Patients load error:', err)
       setPatients([])
+    }
+  }
+
+  const loadDoctorDashboard = async () => {
+    try {
+      const [casesData, rxData, alertsData] = await Promise.all([
+        api('/doctor/cases'),
+        api('/doctor/prescriptions?limit=25'),
+        api('/alerts/feed?windowHours=24&limit=25'),
+      ])
+      setAssignedCases(casesData.patients || [])
+      setRecentPrescriptions(rxData.prescriptions || [])
+      setAlerts(alertsData.alerts || [])
+      if (!selectedPatientToken && (casesData.patients || []).length > 0) {
+        setSelectedPatientToken(casesData.patients[0].patientToken)
+      }
+    } catch (err) {
+      console.error('Doctor dashboard load error:', err)
+      setAssignedCases([])
+      setRecentPrescriptions([])
+      setAlerts([])
+    }
+  }
+
+  const loadVitals = async ({ patientToken, breakGlass }) => {
+    if (!patientToken) return
+    try {
+      setLoading(true)
+      const data = await api(`/vitals/${encodeURIComponent(patientToken)}`, {
+        headers: breakGlass ? { 'x-break-glass': 'true' } : {},
+      })
+      setVitalsRecords(data.records || [])
+      toast(breakGlass ? 'Emergency access recorded' : 'Vitals loaded', breakGlass ? 'warning' : 'success')
+    } catch (err) {
+      toast(err.message || 'Failed to load vitals', 'error')
+      setVitalsRecords([])
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -216,7 +263,8 @@ export default function DoctorDashboard() {
 
       setSignedPrescription(JSON.stringify(created.length === 1 ? created[0] : created, null, 2))
       setVerificationResult('')
-      toast(created.length === 1 ? 'Prescription created and signed!' : `Created ${created.length} signed prescriptions`, 'success')
+      toast(created.length === 1 ? 'Prescription Secured & Signed ✓' : `Prescriptions Secured & Signed ✓ (${created.length})`, 'success')
+      await loadDoctorDashboard()
     } catch (err) {
       toast(err.message || 'Failed to create prescription', 'error')
     } finally {
@@ -267,7 +315,7 @@ export default function DoctorDashboard() {
       }
       const allOk = results.every((r) => r.ok)
       setVerificationResult(JSON.stringify({ ok: allOk, results }, null, 2))
-      toast(allOk ? 'Prescription(s) verified successfully!' : 'Prescription verification failed!', allOk ? 'success' : 'error')
+      toast(allOk ? 'Verified ✓' : 'Verification failed ✗', allOk ? 'success' : 'error')
     } catch (err) {
       toast(err.message || 'Failed to verify prescription', 'error')
     }

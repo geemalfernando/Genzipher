@@ -556,7 +556,20 @@ async function buildApp() {
   const app = express();
   app.disable("x-powered-by");
 
-  const allowedOrigins = CORS_ORIGIN.split(",").map(normalizeOrigin).filter(Boolean);
+  const isProdEnv =
+    String(process.env.NODE_ENV || "").toLowerCase() === "production" ||
+    String(process.env.VERCEL || "").toLowerCase() === "1";
+
+  const allowedOriginsFromEnv = CORS_ORIGIN.split(",").map(normalizeOrigin).filter(Boolean);
+  const defaultDevOrigins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+  ].map(normalizeOrigin);
+
+  const allowedOrigins =
+    allowedOriginsFromEnv.length > 0 ? allowedOriginsFromEnv : isProdEnv ? [] : defaultDevOrigins;
 
   app.use(
     helmet({
@@ -567,7 +580,8 @@ async function buildApp() {
           "script-src": ["'self'"],
           "style-src": ["'self'", "https://unpkg.com", "'unsafe-inline'"],
           "img-src": ["'self'", "data:"],
-          "connect-src": ["'self'"],
+          // Allow unpkg for CSS sourcemaps and related fetches in the hosted static UI.
+          "connect-src": ["'self'", "https://unpkg.com"],
           "object-src": ["'none'"],
           "base-uri": ["'self'"],
           "frame-ancestors": ["'none'"],
@@ -1881,6 +1895,72 @@ async function buildApp() {
       { _id: 0, id: 1, username: 1, email: 1, mfaEnabled: 1, mfaMethod: 1, createdFromDeviceId: 1, lastLoginDeviceId: 1, lastLoginAt: 1 }
     ).lean();
     res.json({ profile, patientToken, user });
+  }));
+
+  // Patient: "wallet" of active prescriptions + status
+  app.get("/patients/wallet", requireAuth, requireRole(["patient"]), asyncRoute(async (req, res) => {
+    const patientToken = hmacTokenizePatientId(req.auth.sub);
+    const prescriptions = await Prescription.find(
+      { patientIdToken: patientToken, status: "active" },
+      { _id: 0, __v: 0 }
+    )
+      .sort({ issuedAt: -1, createdAt: -1 })
+      .limit(100)
+      .lean();
+
+    const rxIds = prescriptions.map((p) => p.id);
+    const dispensed = rxIds.length
+      ? await Dispense.find({ rxId: { $in: rxIds }, allowed: true }, { _id: 0, rxId: 1, ts: 1 }).lean()
+      : [];
+    const usedByRxId = new Map();
+    for (const d of dispensed) {
+      if (!isNonEmptyString(d?.rxId)) continue;
+      const key = String(d.rxId);
+      const prev = usedByRxId.get(key);
+      if (!prev || String(d.ts).localeCompare(String(prev)) > 0) usedByRxId.set(key, d.ts);
+    }
+
+    const doctorIds = [...new Set(prescriptions.map((p) => p.doctorId).filter((id) => isNonEmptyString(id)))];
+    const doctors = doctorIds.length
+      ? await User.find({ id: { $in: doctorIds }, role: "doctor" }, { _id: 0, id: 1, username: 1, publicKeyPem: 1 }).lean()
+      : [];
+    const doctorById = new Map(doctors.map((d) => [d.id, d]));
+
+    const wallet = prescriptions.map((rx) => {
+      const expired = Date.parse(rx.expiry) < Date.now();
+      const usedAt = usedByRxId.get(rx.id) || null;
+      const doctor = doctorById.get(rx.doctorId) || null;
+      let signatureOk = null;
+      try {
+        if (doctor?.publicKeyPem) {
+          const rxCore = {
+            patientIdToken: rx.patientIdToken,
+            medicineId: rx.medicineId,
+            dosage: rx.dosage,
+            durationDays: rx.durationDays,
+            issuedAt: rx.issuedAt,
+            expiry: rx.expiry,
+            nonce: rx.nonce,
+          };
+          signatureOk = verifyObjectEd25519({ obj: rxCore, signatureB64url: rx.signatureB64url, publicKeyPem: doctor.publicKeyPem });
+        }
+      } catch {
+        signatureOk = false;
+      }
+
+      const status = usedAt ? "USED" : expired ? "EXPIRED" : "VALID";
+      return {
+        prescription: rx,
+        status,
+        usedAt,
+        checks: { signatureOk, expired, used: Boolean(usedAt) },
+        doctor: doctor ? { id: doctor.id, username: doctor.username } : null,
+        // For QR: patient can present the signed Rx object to the pharmacist scanner.
+        qrPayload: JSON.stringify(rx),
+      };
+    });
+
+    res.json({ ok: true, count: wallet.length, wallet });
   }));
 
   // Admin generates 1-time clinic code (expires in 10 minutes by default)
@@ -3433,6 +3513,211 @@ async function buildApp() {
       .limit(20)
       .lean();
     res.json({ count: patients.length, patients });
+  }));
+
+  // Doctor: assigned cases (patient identity trust indicators)
+  app.get("/doctor/cases", requireAuth, requireRole(["doctor"]), asyncRoute(async (req, res) => {
+    const assignment = await Assignment.findOne({ doctorId: req.auth.sub }).lean();
+    const tokens = assignment?.patientTokens || [];
+    if (!tokens.length) return res.json({ count: 0, patients: [] });
+
+    const tokenSet = new Set(tokens.map((t) => String(t)));
+    const patients = await User.find(
+      { role: "patient", status: "active" },
+      { _id: 0, id: 1, username: 1, email: 1, status: 1 }
+    ).lean();
+
+    const patientIds = patients.map((p) => p.id);
+    const profiles = patientIds.length
+      ? await PatientProfile.find({ patientId: { $in: patientIds } }, { _id: 0, __v: 0 }).lean()
+      : [];
+    const profileById = new Map(profiles.map((p) => [p.patientId, p]));
+
+    const assigned = [];
+    for (const p of patients) {
+      const patientToken = hmacTokenizePatientId(p.id);
+      if (!tokenSet.has(patientToken)) continue;
+      const profile = profileById.get(p.id) || null;
+      assigned.push({
+        patientId: p.id,
+        username: p.username,
+        status: profile?.status || null,
+        trustScore: safeNumber(profile?.trustScore),
+        trustExplainTop3: Array.isArray(profile?.trustExplainTop3) ? profile.trustExplainTop3 : [],
+        patientToken,
+      });
+    }
+
+    assigned.sort((a, b) => String(a.username || a.patientId).localeCompare(String(b.username || b.patientId)));
+    res.json({ count: assigned.length, patients: assigned });
+  }));
+
+  // Doctor: recent prescriptions created by this doctor (for dashboard)
+  app.get("/doctor/prescriptions", requireAuth, requireRole(["doctor"]), asyncRoute(async (req, res) => {
+    const limit = clampInt(req.query?.limit, { min: 1, max: 200, fallback: 50 });
+    const items = await Prescription.find(
+      { doctorId: req.auth.sub },
+      { _id: 0, __v: 0 }
+    )
+      .sort({ issuedAt: -1, createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    // Try to map patientIdToken -> username (best-effort)
+    const patients = await User.find({ role: "patient" }, { _id: 0, id: 1, username: 1 }).lean();
+    const tokenToPatient = new Map(patients.map((p) => [hmacTokenizePatientId(p.id), p]));
+
+    res.json({
+      count: items.length,
+      prescriptions: items.map((rx) => ({
+        ...rx,
+        patient: tokenToPatient.get(rx.patientIdToken) ? { id: tokenToPatient.get(rx.patientIdToken).id, username: tokenToPatient.get(rx.patientIdToken).username } : null,
+        expired: Date.parse(rx.expiry) < Date.now(),
+      })),
+    });
+  }));
+
+  // Alert feed derived from audit logs (high-signal, role-scoped).
+  app.get("/alerts/feed", requireAuth, asyncRoute(async (req, res) => {
+    const windowHours = clampInt(req.query?.windowHours, { min: 1, max: 24 * 30, fallback: 24 });
+    const limit = clampInt(req.query?.limit, { min: 1, max: 100, fallback: 50 });
+    const to = new Date();
+    const from = new Date(Date.now() - windowHours * 60 * 60 * 1000);
+    const fromIso = from.toISOString();
+    const toIso = to.toISOString();
+
+    const severityForAction = (action) => {
+      const a = String(action || "");
+      if (a === "dispense.blocked") return "critical";
+      if (a === "vitals.read_break_glass") return "high";
+      if (a === "vitals.upload_rejected") return "high";
+      if (a === "auth.password_reset_locked") return "high";
+      if (a === "patient.device_bind_failed") return "medium";
+      if (a.startsWith("anomaly.")) return a === "anomaly.password_reset_rate_limited" ? "high" : "medium";
+      if (a === "auth.login_blocked") return "medium";
+      return "info";
+    };
+
+    const titleForAction = (e) => {
+      const action = String(e?.action || "");
+      if (action === "dispense.blocked") return "Dispense blocked — possible tampering";
+      if (action === "vitals.read_break_glass") return "Emergency access (break-glass) used";
+      if (action === "vitals.upload_rejected") return "Vitals upload rejected";
+      if (action === "auth.password_reset_locked") return "Password reset locked (admin approval required)";
+      if (action === "patient.device_bind_failed") return "Device verification failed";
+      if (action.startsWith("anomaly.")) return `Suspicious activity detected (${action})`;
+      if (action === "auth.login_blocked") return "Login blocked";
+      return action;
+    };
+
+    const actorLabel = (actor) =>
+      (isNonEmptyString(actor?.username) && String(actor.username)) ||
+      (isNonEmptyString(actor?.identifier) && String(actor.identifier)) ||
+      (isNonEmptyString(actor?.userId) && String(actor.userId)) ||
+      "—";
+
+    const toAlert = (e, { overrideTitle = null } = {}) => ({
+      ts: e.ts,
+      severity: severityForAction(e.action),
+      action: e.action,
+      title: overrideTitle || titleForAction(e),
+      actor: { label: actorLabel(e.actor || {}), ...(e.actor || {}) },
+      details: e.details || {},
+    });
+
+    const role = req.auth.role;
+    const userId = req.auth.sub;
+
+    const directFilter = {
+      ts: { $gte: fromIso, $lte: toIso },
+      $or: [{ "actor.userId": userId }, { "actor.patientId": userId }],
+    };
+
+    const direct = await AuditEntry.find(directFilter, { _id: 0, __v: 0 }).sort({ ts: -1 }).limit(200).lean();
+    const out = [];
+
+    // Always include direct high-signal actions first.
+    for (const e of direct) {
+      const action = String(e.action || "");
+      if (
+        action === "auth.password_reset_locked" ||
+        action === "auth.login_blocked" ||
+        action === "patient.device_bind_failed" ||
+        action === "vitals.read_break_glass" ||
+        action === "vitals.upload_rejected" ||
+        action.startsWith("anomaly.")
+      ) {
+        out.push(toAlert(e));
+      }
+    }
+
+    // Doctor: include dispense.blocked related to their prescriptions (tamper attempts at pharmacy)
+    if (role === "doctor") {
+      const blocked = await AuditEntry.find(
+        { ts: { $gte: fromIso, $lte: toIso }, action: "dispense.blocked" },
+        { _id: 0, ts: 1, action: 1, actor: 1, details: 1 }
+      )
+        .sort({ ts: -1 })
+        .limit(200)
+        .lean();
+      const rxIds = blocked.map((b) => b.details?.rxId).filter((id) => isNonEmptyString(id)).map((id) => String(id));
+      const rxDocs = rxIds.length
+        ? await Prescription.find({ id: { $in: rxIds }, doctorId: userId }, { _id: 0, id: 1 }).lean()
+        : [];
+      const myRxIdSet = new Set(rxDocs.map((r) => r.id));
+      for (const b of blocked) {
+        const rxId = b.details?.rxId;
+        if (!isNonEmptyString(rxId) || !myRxIdSet.has(String(rxId))) continue;
+        out.push(toAlert(b, { overrideTitle: "Tampering attempt detected — dispense blocked for your prescription" }));
+      }
+    }
+
+    // Pharmacy: include dispense.blocked and dispense.allowed for operational awareness.
+    if (role === "pharmacy") {
+      const recentDispense = await AuditEntry.find(
+        { ts: { $gte: fromIso, $lte: toIso }, $or: [{ action: "dispense.blocked" }, { action: "dispense.allowed" }], "actor.userId": userId },
+        { _id: 0, ts: 1, action: 1, actor: 1, details: 1 }
+      )
+        .sort({ ts: -1 })
+        .limit(100)
+        .lean();
+      for (const e of recentDispense) out.push(toAlert(e));
+    }
+
+    // Admin: also include top anomalies + dispense blocks (overview).
+    if (role === "admin") {
+      const adminExtra = await AuditEntry.find(
+        {
+          ts: { $gte: fromIso, $lte: toIso },
+          $or: [{ action: "dispense.blocked" }, { action: "auth.password_reset_locked" }, { action: { $regex: "^anomaly\\." } }],
+        },
+        { _id: 0, ts: 1, action: 1, actor: 1, details: 1 }
+      )
+        .sort({ ts: -1 })
+        .limit(200)
+        .lean();
+      for (const e of adminExtra) out.push(toAlert(e));
+    }
+
+    // De-dupe by (ts,action,actorLabel)
+    const seen = new Set();
+    const deduped = [];
+    for (const a of out) {
+      const key = `${a.ts}|${a.action}|${a.actor?.label || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(a);
+    }
+
+    // Order by severity then newest
+    const rank = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+    deduped.sort((a, b) => {
+      const s = (rank[b.severity] || 0) - (rank[a.severity] || 0);
+      if (s !== 0) return s;
+      return String(b.ts).localeCompare(String(a.ts));
+    });
+
+    res.json({ ok: true, windowHours, from: fromIso, to: toIso, count: Math.min(limit, deduped.length), alerts: deduped.slice(0, limit) });
   }));
 
   // --- Pharmacy/Pharmacist Endpoints (dashboard) ---

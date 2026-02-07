@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../utils/AuthContext'
 import { api, toast } from '../utils/api'
+import { base64UrlToUint8Array, arrayBufferToBytes } from '../utils/webauthn'
 import '../styles/PatientDashboard.css'
 
 export default function PharmacistDashboard() {
@@ -13,6 +14,12 @@ export default function PharmacistDashboard() {
   const [biometricEnrolled, setBiometricEnrolled] = useState(false)
   const [biometricError, setBiometricError] = useState(null)
   const [user, setUser] = useState(null)
+
+  // Dispense gate (Tier-1 demo)
+  const [dispenseRxJson, setDispenseRxJson] = useState('')
+  const [dispenseBatchJson, setDispenseBatchJson] = useState('')
+  const [dispenseVerifyOut, setDispenseVerifyOut] = useState(null)
+  const [dispenseResult, setDispenseResult] = useState(null)
   
   // Dashboard statistics
   const [statistics, setStatistics] = useState({
@@ -77,14 +84,8 @@ export default function PharmacistDashboard() {
         method: 'POST'
       })
 
-      const challengeBuffer = Uint8Array.from(
-        atob(enrollmentOptions.challenge.replace(/-/g, '+').replace(/_/g, '/')), 
-        c => c.charCodeAt(0)
-      )
-      const userIdBuffer = Uint8Array.from(
-        atob(enrollmentOptions.user.id.replace(/-/g, '+').replace(/_/g, '/')), 
-        c => c.charCodeAt(0)
-      )
+      const challengeBuffer = base64UrlToUint8Array(enrollmentOptions?.challenge)
+      const userIdBuffer = base64UrlToUint8Array(enrollmentOptions?.user?.id)
 
       const publicKeyCredentialCreationOptions = {
         challenge: challengeBuffer,
@@ -108,10 +109,10 @@ export default function PharmacistDashboard() {
 
       const credentialForServer = {
         id: credential.id,
-        rawId: Array.from(new Uint8Array(credential.rawId)),
+        rawId: arrayBufferToBytes(credential.rawId),
         response: {
-          attestationObject: Array.from(new Uint8Array(credential.response.attestationObject)),
-          clientDataJSON: Array.from(new Uint8Array(credential.response.clientDataJSON)),
+          attestationObject: arrayBufferToBytes(credential.response.attestationObject),
+          clientDataJSON: arrayBufferToBytes(credential.response.clientDataJSON),
         },
         type: credential.type,
       }
@@ -160,16 +161,13 @@ export default function PharmacistDashboard() {
         throw new Error('internal_error')
       }
 
-      const challengeBuffer = Uint8Array.from(
-        atob(verifyOptions.challenge.replace(/-/g, '+').replace(/_/g, '/')), 
-        c => c.charCodeAt(0)
-      )
+      const challengeBuffer = base64UrlToUint8Array(verifyOptions?.challenge)
 
       const publicKeyCredentialRequestOptions = {
         challenge: challengeBuffer,
         allowCredentials: verifyOptions.allowCredentials.map(cred => ({
           ...cred,
-          id: Uint8Array.from(atob(String(cred.id || '').replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))
+          id: base64UrlToUint8Array(String(cred.id || ''))
         })),
         timeout: verifyOptions.timeout,
         rpId: verifyOptions.rpId,
@@ -184,12 +182,12 @@ export default function PharmacistDashboard() {
 
       const assertionForServer = {
         id: assertion.id,
-        rawId: Array.from(new Uint8Array(assertion.rawId)),
+        rawId: arrayBufferToBytes(assertion.rawId),
         response: {
-          authenticatorData: Array.from(new Uint8Array(assertion.response.authenticatorData)),
-          clientDataJSON: Array.from(new Uint8Array(assertion.response.clientDataJSON)),
-          signature: Array.from(new Uint8Array(assertion.response.signature)),
-          userHandle: assertion.response.userHandle ? Array.from(new Uint8Array(assertion.response.userHandle)) : null,
+          authenticatorData: arrayBufferToBytes(assertion.response.authenticatorData),
+          clientDataJSON: arrayBufferToBytes(assertion.response.clientDataJSON),
+          signature: arrayBufferToBytes(assertion.response.signature),
+          userHandle: assertion.response.userHandle ? arrayBufferToBytes(assertion.response.userHandle) : null,
         },
         type: assertion.type,
       }
@@ -211,6 +209,94 @@ export default function PharmacistDashboard() {
       console.error('Biometric verification error:', err)
       setBiometricError(err.message || 'Biometric verification failed')
       toast(err.message || 'Biometric verification failed', 'error')
+    }
+  }
+
+  const parseJsonOrThrow = (label, value) => {
+    if (!value || !String(value).trim()) throw new Error(`${label}_missing`)
+    try {
+      return JSON.parse(String(value))
+    } catch {
+      throw new Error(`${label}_invalid_json`)
+    }
+  }
+
+  const handleDispenseVerify = async () => {
+    try {
+      setLoading(true)
+      setDispenseResult(null)
+
+      const prescription = parseJsonOrThrow('prescription', dispenseRxJson)
+      const batch = parseJsonOrThrow('batch', dispenseBatchJson)
+
+      const [rxVerify, batchVerify] = await Promise.all([
+        api('/prescriptions/verify', { method: 'POST', body: { prescription } }),
+        api('/batches/verify', { method: 'POST', body: { batch } }),
+      ])
+
+      const ok = Boolean(rxVerify?.ok) && Boolean(batchVerify?.ok) && !batchVerify?.expired
+      const out = {
+        ok,
+        prescription: {
+          ok: Boolean(rxVerify?.ok),
+          checks: rxVerify?.checks || null,
+        },
+        batch: {
+          ok: Boolean(batchVerify?.ok),
+          signatureOk: Boolean(batchVerify?.signatureOk),
+          expired: Boolean(batchVerify?.expired),
+        },
+      }
+      setDispenseVerifyOut(out)
+      toast(ok ? 'Verified ✓' : 'Verification failed ✗', ok ? 'success' : 'error')
+    } catch (err) {
+      setDispenseVerifyOut(null)
+      toast(err.message || 'Verify failed', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDispenseSubmit = async () => {
+    try {
+      setLoading(true)
+      const prescription = parseJsonOrThrow('prescription', dispenseRxJson)
+      const batch = parseJsonOrThrow('batch', dispenseBatchJson)
+
+      const out = await api('/dispense', { method: 'POST', body: { prescription, batch } })
+      setDispenseResult(out)
+      toast(out?.ok ? 'SAFE TO DISPENSE ✓' : 'BLOCKED ✗', out?.ok ? 'success' : 'error')
+    } catch (err) {
+      setDispenseResult(null)
+      toast(err.message || 'Dispense failed', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleTamperRx = () => {
+    try {
+      const rx = parseJsonOrThrow('prescription', dispenseRxJson)
+      const out = { ...rx, dosage: '999mg' }
+      setDispenseRxJson(JSON.stringify(out, null, 2))
+      setDispenseVerifyOut(null)
+      setDispenseResult(null)
+      toast('Tampered: dosage changed to 999mg', 'warning')
+    } catch (err) {
+      toast(err.message || 'Tamper failed', 'error')
+    }
+  }
+
+  const handleTamperBatch = () => {
+    try {
+      const batch = parseJsonOrThrow('batch', dispenseBatchJson)
+      const out = { ...batch, batchId: `${batch.batchId || 'BATCH'}-TAMPER` }
+      setDispenseBatchJson(JSON.stringify(out, null, 2))
+      setDispenseVerifyOut(null)
+      setDispenseResult(null)
+      toast('Tampered: batchId changed', 'warning')
+    } catch (err) {
+      toast(err.message || 'Tamper failed', 'error')
     }
   }
 
@@ -483,8 +569,103 @@ export default function PharmacistDashboard() {
 
             {activeTab === 'dispense' && (
               <div className="healthcare-card">
-                <h2>Dispense Management</h2>
-                <p style={{ color: 'var(--healthcare-text-muted)' }}>Dispense management functionality will be implemented here.</p>
+                <h2>Verify + Dispense Gate</h2>
+                <p style={{ color: 'var(--healthcare-text-muted)', marginBottom: '1.25rem' }}>
+                  Paste/scan the signed prescription and signed batch. The system verifies both and either allows dispensing or blocks it.
+                </p>
+
+                {dispenseResult && (
+                  <div
+                    style={{
+                      padding: '1rem',
+                      borderRadius: '10px',
+                      marginBottom: '1.25rem',
+                      background: dispenseResult.ok ? 'var(--healthcare-success-bg)' : 'var(--healthcare-error-bg)',
+                      border: `1px solid ${dispenseResult.ok ? 'var(--healthcare-success)' : 'var(--healthcare-danger)'}`,
+                    }}
+                  >
+                    <div style={{ fontSize: '1.1rem', fontWeight: 800 }}>
+                      {dispenseResult.ok ? 'SAFE TO DISPENSE ✓' : 'BLOCKED ✗'}
+                    </div>
+                    <div style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.9rem' }}>
+                      {dispenseResult.ok
+                        ? 'Dispense recorded and audited.'
+                        : 'Do not dispense. Possible tamper/invalid prescription or batch.'}
+                    </div>
+                  </div>
+                )}
+
+                <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">Prescription JSON</label>
+                    <textarea
+                      className="form-input"
+                      rows={10}
+                      value={dispenseRxJson}
+                      onChange={(e) => setDispenseRxJson(e.target.value)}
+                      placeholder='Paste signed prescription JSON here…'
+                      style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}
+                    />
+                    <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '0.75rem' }}>
+                      <button onClick={handleDispenseVerify} className="btn-secondary" disabled={loading}>
+                        Verify
+                      </button>
+                      <button onClick={handleTamperRx} className="btn-danger" type="button" disabled={!dispenseRxJson}>
+                        Tamper dosage
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Batch JSON</label>
+                    <textarea
+                      className="form-input"
+                      rows={10}
+                      value={dispenseBatchJson}
+                      onChange={(e) => setDispenseBatchJson(e.target.value)}
+                      placeholder='Paste signed batch JSON here…'
+                      style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}
+                    />
+                    <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '0.75rem' }}>
+                      <button onClick={handleDispenseVerify} className="btn-secondary" disabled={loading}>
+                        Verify
+                      </button>
+                      <button onClick={handleTamperBatch} className="btn-danger" type="button" disabled={!dispenseBatchJson}>
+                        Tamper batchId
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {dispenseVerifyOut && (
+                  <div style={{ marginTop: '1.25rem', padding: '0.75rem', background: 'var(--healthcare-bg)', borderRadius: '10px' }}>
+                    <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>
+                      {dispenseVerifyOut.ok ? 'Verified ✓' : 'Verification failed ✗'}
+                    </div>
+                    <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '0.85rem' }}>
+                      {JSON.stringify(dispenseVerifyOut, null, 2)}
+                    </pre>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '1.25rem' }}>
+                  <button onClick={handleDispenseSubmit} className="btn-primary" disabled={loading}>
+                    {loading ? 'Processing…' : 'Dispense'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDispenseRxJson('')
+                      setDispenseBatchJson('')
+                      setDispenseVerifyOut(null)
+                      setDispenseResult(null)
+                    }}
+                    className="btn-secondary"
+                    type="button"
+                    disabled={loading}
+                  >
+                    Clear
+                  </button>
+                </div>
               </div>
             )}
           </div>
