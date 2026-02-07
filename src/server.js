@@ -19,6 +19,9 @@ import { OtpRequest } from "./db/models/OtpRequest.js";
 import { TrustedDevice } from "./db/models/TrustedDevice.js";
 import { UserLoginDevice } from "./db/models/UserLoginDevice.js";
 import { MagicLinkRequest } from "./db/models/MagicLinkRequest.js";
+import { StaffSession } from "./db/models/StaffSession.js";
+import { Biometric } from "./db/models/Biometric.js";
+import { WebAuthnChallenge } from "./db/models/WebAuthnChallenge.js";
 import { Prescription } from "./db/models/Prescription.js";
 import { Batch } from "./db/models/Batch.js";
 import { Dispense } from "./db/models/Dispense.js";
@@ -206,6 +209,9 @@ async function ensureIndexes() {
     TrustedDevice.init(),
     UserLoginDevice.init(),
     MagicLinkRequest.init(),
+    StaffSession.init(),
+    Biometric.init(),
+    WebAuthnChallenge.init(),
     Prescription.init(),
     Batch.init(),
     Dispense.init(),
@@ -269,6 +275,54 @@ function looksLikeDeviceId(value) {
   const s = value.trim();
   if (s.length < 8 || s.length > 128) return false;
   return /^[a-zA-Z0-9_.:-]+$/.test(s);
+}
+
+function getRequestDeviceId(req) {
+  const header = req.header("x-gz-device-id");
+  const body = req.body?.deviceId;
+  const raw = isNonEmptyString(header) ? header : body;
+  const normalized = isNonEmptyString(raw) ? String(raw).trim() : "";
+  return looksLikeDeviceId(normalized) ? normalized : null;
+}
+
+async function upsertStaffSession({ user, req, deviceId }) {
+  const staffRoles = new Set(["pharmacy", "doctor", "admin", "manufacturer"]);
+  if (!user || !staffRoles.has(user.role)) return null;
+  const did = looksLikeDeviceId(deviceId) ? String(deviceId).trim() : null;
+  if (!did) return null;
+  const now = new Date();
+  const ip = String(getClientIp(req)).slice(0, 128);
+  const ua = isNonEmptyString(req.header("user-agent")) ? String(req.header("user-agent")).slice(0, 512) : null;
+
+  await StaffSession.updateOne(
+    { userId: user.id, role: user.role, deviceId: did, isActive: true },
+    {
+      $setOnInsert: { id: randomId("staffsess"), userId: user.id, role: user.role, deviceId: did, firstSeenAt: now },
+      $set: { lastSeenAt: now, ipAddress: ip, userAgent: ua, isActive: true },
+    },
+    { upsert: true }
+  );
+  return StaffSession.findOne({ userId: user.id, role: user.role, deviceId: did, isActive: true }).lean();
+}
+
+async function getActiveStaffSession({ userId, deviceId }) {
+  if (!looksLikeDeviceId(deviceId)) return null;
+  return StaffSession.findOne({ userId, deviceId: String(deviceId).trim(), isActive: true }).lean();
+}
+
+function requirePharmacyBiometric(req, res, next) {
+  if (!req.auth || req.auth.role !== "pharmacy") return next();
+  const did = getRequestDeviceId(req);
+  if (!did) return res.status(400).json({ error: "missing_device_id" });
+  return StaffSession.findOne({ userId: req.auth.sub, role: "pharmacy", deviceId: did, isActive: true })
+    .lean()
+    .then((sess) => {
+      if (!sess || !sess.biometricVerified) {
+        return res.status(403).json({ error: "biometric_verification_required" });
+      }
+      return next();
+    })
+    .catch(next);
 }
 
 async function recordLoginSuccess({ userId, deviceId, ip = null, userAgent = null }) {
@@ -595,6 +649,7 @@ async function buildApp() {
             ip: getClientIp(req),
             userAgent: req.header("user-agent") || null,
           });
+          await upsertStaffSession({ user, req, deviceId: String(deviceId).trim() });
           await auditAppend({
             actor: { userId: user.id, role: user.role, username: user.username },
             action: "auth.mfa_bypassed_trusted_device",
@@ -654,6 +709,8 @@ async function buildApp() {
       ip: getClientIp(req),
       userAgent: req.header("user-agent") || null,
     });
+
+    await upsertStaffSession({ user, req, deviceId: String(deviceId || "").trim() });
 
     await auditAppend({
       actor: { userId: user.id, role: user.role, username: user.username },
@@ -741,6 +798,7 @@ async function buildApp() {
       ip: getClientIp(req),
       userAgent: req.header("user-agent") || null,
     });
+    await upsertStaffSession({ user, req, deviceId: String(deviceId).trim() });
     return res.json({ token: jwt, role: user.role, userId: user.id });
   }));
 
@@ -840,6 +898,7 @@ async function buildApp() {
       ip: getClientIp(req),
       userAgent: req.header("user-agent") || null,
     });
+    await upsertStaffSession({ user, req, deviceId: String(deviceId || "").trim() });
 
     return res.json({ token, role: user.role, userId: user.id, ...(rememberOut ? rememberOut : {}) });
   }));
@@ -926,6 +985,23 @@ async function buildApp() {
   // Deprecated: kept to avoid breaking old UI. Use the flows above.
   app.post("/auth/forget-device", requireAuth, asyncRoute(async (req, res) => {
     return res.status(410).json({ error: "deprecated", message: "Use /auth/trusted-devices/remove/request and /confirm (email verification required)." });
+  }));
+
+  // Logout for hosted deployments (clears staff biometric verification for this device).
+  app.post("/auth/logout", requireAuth, asyncRoute(async (req, res) => {
+    const did = getRequestDeviceId(req);
+    if (did && req.auth.role !== "patient") {
+      await StaffSession.updateOne(
+        { userId: req.auth.sub, role: req.auth.role, deviceId: did, isActive: true },
+        { $set: { isActive: false, biometricVerified: false, biometricVerifiedAt: null, lastSeenAt: new Date() } }
+      );
+    }
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+      action: "auth.logout",
+      details: { deviceId: did },
+    });
+    res.json({ ok: true });
   }));
 
   app.post("/auth/resend-otp", asyncRoute(async (req, res) => {
@@ -1141,6 +1217,238 @@ async function buildApp() {
       next: score >= 80 ? "login" : "verify_clinic_code",
       ...(verification ? { verification } : {}),
     });
+  }));
+
+  // --- Pharmacist (pharmacy role) signup ---
+  app.post("/pharmacist/signup", asyncRoute(async (req, res) => {
+    const { username, email, password, mfaCode, deviceId } = req.body || {};
+    if (!looksLikeUsername(username) || !looksLikePassword(password) || !looksLikeEmail(email)) {
+      return res.status(400).json({ error: "bad_request", message: "username + email + password required" });
+    }
+    if (String(mfaCode || "").trim() !== String(DEMO_MFA_CODE)) {
+      return res.status(401).json({ error: "mfa_required_or_invalid" });
+    }
+    const existing = await User.findOne({ $or: [{ username }, { email: String(email).trim().toLowerCase() }] }).lean();
+    if (existing) return res.status(409).json({ error: "user_exists" });
+
+    const userId = randomId("u_pharmacy");
+    const user = await User.create({
+      id: userId,
+      username: String(username).trim(),
+      email: String(email).trim().toLowerCase(),
+      role: "pharmacy",
+      password: String(password),
+      status: "active",
+      mfaEnabled: false,
+      mfaMethod: "NONE",
+      biometricEnrolled: false,
+      biometricEnrolledAt: null,
+      createdFromDeviceId: looksLikeDeviceId(deviceId) ? String(deviceId).trim() : null,
+    });
+
+    const token = jwtSignHs256({
+      payload: { sub: user.id, role: user.role, username: user.username },
+      secret: JWT_SECRET,
+      expiresInSeconds: 15 * 60,
+    });
+
+    await recordLoginSuccess({
+      userId: user.id,
+      deviceId: String(deviceId || "").trim(),
+      ip: getClientIp(req),
+      userAgent: req.header("user-agent") || null,
+    });
+    await upsertStaffSession({ user, req, deviceId: String(deviceId || "").trim() });
+
+    await auditAppend({
+      actor: { userId: user.id, role: "pharmacy", username: user.username },
+      action: "pharmacist.signup",
+      details: {},
+    });
+
+    return res.status(201).json({ ok: true, token, role: "pharmacy", userId: user.id });
+  }));
+
+  // --- Biometric (WebAuthn MVP) ---
+  app.get("/biometric/status", requireAuth, asyncRoute(async (req, res) => {
+    const count = await Biometric.countDocuments({ userId: req.auth.sub, isActive: true });
+    const user = await User.findOne({ id: req.auth.sub }, { _id: 0, biometricEnrolled: 1 }).lean();
+    res.json({ ok: true, enrolled: Boolean(user?.biometricEnrolled), credentialCount: count });
+  }));
+
+  app.get("/pharmacy/biometric-status", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
+    const did = getRequestDeviceId(req);
+    if (!did) return res.status(400).json({ error: "missing_device_id" });
+    const session = await getActiveStaffSession({ userId: req.auth.sub, deviceId: did });
+    res.json({
+      ok: true,
+      deviceId: did,
+      biometricVerified: Boolean(session?.biometricVerified),
+      biometricVerifiedAt: session?.biometricVerifiedAt || null,
+    });
+  }));
+
+  app.post("/biometric/enroll/start", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
+    const did = getRequestDeviceId(req);
+    if (!did) return res.status(400).json({ error: "missing_device_id" });
+    const rpId = new URL(PUBLIC_BASE_URL).hostname;
+    const challenge = crypto.randomBytes(32).toString("base64url");
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    await WebAuthnChallenge.create({
+      id: randomId("wac"),
+      userId: req.auth.sub,
+      purpose: "ENROLL",
+      challenge,
+      expiresAt,
+    });
+    const existing = await Biometric.find({ userId: req.auth.sub, isActive: true }, { _id: 0, credentialIdB64u: 1 }).lean();
+    res.json({
+      ok: true,
+      publicKey: {
+        challenge,
+        rp: { name: "GenZipher", id: rpId },
+        user: {
+          id: Buffer.from(req.auth.sub).toString("base64url"),
+          name: req.auth.username,
+          displayName: req.auth.username,
+        },
+        pubKeyCredParams: [
+          { type: "public-key", alg: -7 },
+          { type: "public-key", alg: -257 },
+        ],
+        timeout: 60000,
+        attestation: "none",
+        authenticatorSelection: {
+          authenticatorAttachment: "platform",
+          userVerification: "required",
+        },
+        excludeCredentials: existing.map((e) => ({ type: "public-key", id: e.credentialIdB64u })),
+      },
+      expiresAt: expiresAt.toISOString(),
+    });
+  }));
+
+  app.post("/biometric/enroll/complete", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
+    const { credential, deviceName } = req.body || {};
+    const cred = credential || req.body;
+    const credId = isNonEmptyString(cred?.id) ? String(cred.id).trim() : "";
+    if (!isNonEmptyString(credId)) return res.status(400).json({ error: "bad_request", message: "credential.id required" });
+
+    const latest = await WebAuthnChallenge.findOne({ userId: req.auth.sub, purpose: "ENROLL", expiresAt: { $gt: new Date() } })
+      .sort({ expiresAt: -1 })
+      .lean();
+    if (!latest) return res.status(400).json({ error: "challenge_missing" });
+
+    // MVP check: ensure client used the issued challenge (no cryptographic verification here).
+    const clientChallenge = cred?.response?.clientDataJSONChallenge || cred?.challenge || null;
+    if (clientChallenge && String(clientChallenge) !== String(latest.challenge)) {
+      return res.status(401).json({ error: "challenge_mismatch" });
+    }
+
+    await Biometric.create({
+      id: randomId("bio"),
+      userId: req.auth.sub,
+      role: "pharmacy",
+      credentialIdB64u: credId,
+      publicKeyJson: JSON.stringify(cred),
+      counter: 0,
+      deviceName: isNonEmptyString(deviceName) ? String(deviceName).trim().slice(0, 64) : null,
+      enrolledAt: new Date(),
+      lastUsedAt: null,
+      isActive: true,
+    });
+    await Promise.all([
+      User.updateOne({ id: req.auth.sub }, { $set: { biometricEnrolled: true, biometricEnrolledAt: new Date() } }),
+      WebAuthnChallenge.deleteOne({ id: latest.id }),
+    ]);
+
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: "pharmacy", username: req.auth.username },
+      action: "biometric.enrolled",
+      details: { credentialId: credId },
+    });
+
+    res.status(201).json({ ok: true, enrolled: true });
+  }));
+
+  app.post("/biometric/verify/start", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
+    const did = getRequestDeviceId(req);
+    if (!did) return res.status(400).json({ error: "missing_device_id" });
+    const creds = await Biometric.find({ userId: req.auth.sub, isActive: true }, { _id: 0, credentialIdB64u: 1 }).lean();
+    if (!creds.length) return res.status(404).json({ error: "no_biometrics_enrolled" });
+
+    const challenge = crypto.randomBytes(32).toString("base64url");
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    await WebAuthnChallenge.create({
+      id: randomId("wac"),
+      userId: req.auth.sub,
+      purpose: "VERIFY",
+      challenge,
+      expiresAt,
+    });
+
+    res.json({
+      ok: true,
+      publicKey: {
+        challenge,
+        timeout: 60000,
+        userVerification: "required",
+        allowCredentials: creds.map((c) => ({ type: "public-key", id: c.credentialIdB64u })),
+      },
+      expiresAt: expiresAt.toISOString(),
+    });
+  }));
+
+  app.post("/biometric/verify/complete", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
+    const did = getRequestDeviceId(req);
+    if (!did) return res.status(400).json({ error: "missing_device_id" });
+    const { credential } = req.body || {};
+    const cred = credential || req.body;
+    const credId = isNonEmptyString(cred?.id) ? String(cred.id).trim() : "";
+    if (!isNonEmptyString(credId)) return res.status(400).json({ error: "bad_request", message: "credential.id required" });
+
+    const latest = await WebAuthnChallenge.findOne({ userId: req.auth.sub, purpose: "VERIFY", expiresAt: { $gt: new Date() } })
+      .sort({ expiresAt: -1 })
+      .lean();
+    if (!latest) return res.status(400).json({ error: "challenge_missing" });
+
+    const enrolled = await Biometric.findOne({ userId: req.auth.sub, credentialIdB64u: credId, isActive: true }).lean();
+    if (!enrolled) return res.status(403).json({ error: "credential_not_allowed" });
+
+    const now = new Date();
+    await Promise.all([
+      Biometric.updateOne({ id: enrolled.id }, { $set: { lastUsedAt: now } }),
+      StaffSession.updateOne(
+        { userId: req.auth.sub, role: "pharmacy", deviceId: did, isActive: true },
+        {
+          $setOnInsert: {
+            id: randomId("staffsess"),
+            userId: req.auth.sub,
+            role: "pharmacy",
+            deviceId: did,
+            firstSeenAt: now,
+            ipAddress: String(getClientIp(req)).slice(0, 128),
+            userAgent: isNonEmptyString(req.header("user-agent")) ? String(req.header("user-agent")).slice(0, 512) : null,
+          },
+          $set: {
+            lastSeenAt: now,
+            biometricVerified: true,
+            biometricVerifiedAt: now,
+            isActive: true,
+          },
+        },
+        { upsert: true }
+      ),
+      WebAuthnChallenge.deleteOne({ id: latest.id }),
+    ]);
+
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: "pharmacy", username: req.auth.username },
+      action: "biometric.verified",
+      details: { credentialId: credId, deviceId: did },
+    });
+
+    res.json({ ok: true, biometricVerified: true });
   }));
 
   app.get("/patients/me/profile", requireAuth, requireRole(["patient"]), asyncRoute(async (req, res) => {
@@ -1754,7 +2062,7 @@ async function buildApp() {
   }));
 
   // --- Dispense ---
-  app.post("/dispense", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
+  app.post("/dispense", requireAuth, requireRole(["pharmacy"]), requirePharmacyBiometric, asyncRoute(async (req, res) => {
     const { prescription: rx, batch } = req.body || {};
     if (!rx || !batch) return res.status(400).json({ error: "bad_request", message: "prescription and batch required" });
 

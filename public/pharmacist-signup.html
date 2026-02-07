@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en" data-color-mode="light" data-light-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pharmacist Registration • GenZipher</title>
+    <link rel="stylesheet" href="https://unpkg.com/@primer/css@17.0.1/dist/primer.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="p-3 p-md-4">
+    <main class="container-sm">
+      <div class="Box p-4">
+        <h1 class="f3 mb-1">Register as Pharmacist</h1>
+        <p class="color-fg-muted">
+          Creates a <span class="gz-mono">pharmacy</span> account. After signup, you’ll be logged in and can enroll biometrics.
+        </p>
+
+        <div id="ps_toast" class="flash" hidden></div>
+
+        <form id="ps_form" class="d-flex flex-column gap-2 mt-3">
+          <label class="form-group">
+            <div class="text-small color-fg-muted">Username</div>
+            <input id="ps_username" class="form-control input-block" placeholder="pharmacist1" required />
+          </label>
+          <label class="form-group">
+            <div class="text-small color-fg-muted">Email</div>
+            <input id="ps_email" class="form-control input-block" placeholder="pharmacist@example.com" required />
+          </label>
+          <label class="form-group">
+            <div class="text-small color-fg-muted">Password</div>
+            <input id="ps_password" class="form-control input-block" type="password" placeholder="password123" required />
+          </label>
+          <label class="form-group">
+            <div class="text-small color-fg-muted">Registration code (MFA)</div>
+            <input id="ps_mfa" class="form-control input-block" placeholder="123456" required />
+          </label>
+          <button class="btn btn-primary" type="submit">Create account</button>
+        </form>
+
+        <div class="text-small color-fg-muted mt-3">
+          Back to <a href="/">login</a>.
+        </div>
+
+        <h4 class="f6 mt-3 mb-1">Output</h4>
+        <textarea id="ps_out" class="form-control input-block gz-json" placeholder="Response…"></textarea>
+      </div>
+    </main>
+
+    <script src="pharmacist-signup.js" type="module"></script>
+  </body>
+</html>
+

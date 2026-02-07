@@ -63,6 +63,9 @@
                 <input id="login_mfa" class="form-control input-block" placeholder="123456" />
               </label>
               <button class="btn btn-primary" type="submit">Login</button>
+              <div class="text-small">
+                <a href="/pharmacist-signup.html">Register as Pharmacist</a>
+              </div>
               <div class="color-fg-muted text-small">
                 Try: <span class="gz-mono">doctor1</span>, <span class="gz-mono">mfg1</span>, <span class="gz-mono">pharmacy1</span>, <span class="gz-mono">admin1</span>, <span class="gz-mono">patient1</span>
               </div>
@@ -226,6 +229,17 @@
 
           <div id="role_pharmacy" hidden>
             <h3 class="f5 mt-3">Pharmacy: Dispense Gate (Rx + Batch)</h3>
+            <div id="pharmacyBioBox" class="Box p-2 mt-2" hidden>
+              <h4 class="f6 mb-1">Biometric verification required</h4>
+              <div id="pharmacyBioMsg" class="text-small color-fg-muted">
+                Verify biometrics to access dispensing.
+              </div>
+              <div class="d-flex gap-2 mt-2 flex-wrap">
+                <button id="pharmacyEnrollBtn" class="btn btn-sm" type="button">Enroll biometrics</button>
+                <button id="pharmacyVerifyBtn" class="btn btn-sm btn-primary" type="button">Verify biometrics</button>
+              </div>
+              <textarea id="pharmacyBioOut" class="form-control input-block gz-json mt-2" placeholder="Biometric output…"></textarea>
+            </div>
             <form id="dispenseForm" class="d-flex flex-column gap-2">
               <div class="d-flex flex-justify-between flex-items-center">
                 <div class="text-small color-fg-muted">Prescription JSON</div>

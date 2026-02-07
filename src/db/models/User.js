@@ -20,6 +20,8 @@ const UserSchema = new mongoose.Schema(
       default: "NONE",
       index: true,
     },
+    biometricEnrolled: { type: Boolean, required: true, default: false, index: true },
+    biometricEnrolledAt: { type: Date, default: null, index: true },
     createdFromDeviceId: { type: String, default: null, index: true },
     lastLoginDeviceId: { type: String, default: null, index: true },
     lastLoginAt: { type: Date, default: null, index: true },

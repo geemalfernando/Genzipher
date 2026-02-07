@@ -407,6 +407,7 @@ async function api(path, { method = "GET", body } = {}) {
     method,
     headers: {
       ...(body ? { "content-type": "application/json" } : {}),
+      "x-gz-device-id": getDeviceId(),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -497,6 +498,10 @@ async function updateAuthUi() {
       await loadTrustedDevices();
       await autoBindDevice();
     }
+
+    if (auth.role === "pharmacy") {
+      await pharmacyLoadBiometricStatus();
+    }
   } catch (err) {
     setToken(null);
     toast(`Session expired: ${err.message}`, "error");
@@ -558,9 +563,135 @@ async function onLogin(e) {
 }
 
 function onLogout() {
-  setToken(null);
-  setPendingOtpState(null);
-  toast("Logged out", "success");
+  (async () => {
+    try {
+      await api("/auth/logout", { method: "POST", body: {} });
+    } catch {
+      // ignore
+    }
+    setToken(null);
+    setPendingOtpState(null);
+    toast("Logged out", "success");
+  })();
+}
+
+function b64uToBuf(b64u) {
+  const b64 = String(b64u).replaceAll("-", "+").replaceAll("_", "/");
+  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+  const bin = atob(b64 + pad);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function bufToB64u(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  const b64 = btoa(bin);
+  return b64.replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+async function pharmacyLoadBiometricStatus() {
+  const box = $("pharmacyBioBox");
+  const out = $("pharmacyBioOut");
+  try {
+    const status = await api("/pharmacy/biometric-status");
+    const enrolled = await api("/biometric/status");
+    out.value = pretty({ status, enrolled });
+
+    const msg = $("pharmacyBioMsg");
+    const enrollBtn = $("pharmacyEnrollBtn");
+    const verifyBtn = $("pharmacyVerifyBtn");
+
+    if (status.biometricVerified) {
+      box.hidden = true;
+      return;
+    }
+
+    box.hidden = false;
+    if (!enrolled.enrolled) {
+      msg.textContent = "No biometric enrolled yet. Enroll once to continue.";
+      enrollBtn.hidden = false;
+      verifyBtn.hidden = true;
+    } else {
+      msg.textContent = "Biometric verification required for this session. Please verify.";
+      enrollBtn.hidden = true;
+      verifyBtn.hidden = false;
+    }
+  } catch (err) {
+    box.hidden = false;
+    out.value = pretty({ ok: false, error: err.message });
+    $("pharmacyBioMsg").textContent = `Biometric status error: ${err.message}`;
+  }
+}
+
+async function pharmacyEnrollBiometric() {
+  try {
+    if (!window.PublicKeyCredential) throw new Error("WebAuthn not supported in this browser");
+    const start = await api("/biometric/enroll/start", { method: "POST", body: {} });
+    const pk = start.publicKey;
+    const options = {
+      publicKey: {
+        ...pk,
+        challenge: b64uToBuf(pk.challenge),
+        user: { ...pk.user, id: b64uToBuf(pk.user.id) },
+        excludeCredentials: (pk.excludeCredentials || []).map((c) => ({ ...c, id: b64uToBuf(c.id) })),
+      },
+    };
+    const cred = await navigator.credentials.create(options);
+    const json = {
+      id: cred.id,
+      rawId: bufToB64u(cred.rawId),
+      type: cred.type,
+      response: {
+        clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+        attestationObject: bufToB64u(cred.response.attestationObject),
+      },
+    };
+    const done = await api("/biometric/enroll/complete", { method: "POST", body: { credential: json } });
+    $("pharmacyBioOut").value = pretty(done);
+    toast("Biometric enrolled", "success");
+    await pharmacyLoadBiometricStatus();
+  } catch (err) {
+    $("pharmacyBioOut").value = pretty({ ok: false, error: err.message });
+    toast(err.message, "error");
+  }
+}
+
+async function pharmacyVerifyBiometric() {
+  try {
+    if (!window.PublicKeyCredential) throw new Error("WebAuthn not supported in this browser");
+    const start = await api("/biometric/verify/start", { method: "POST", body: {} });
+    const pk = start.publicKey;
+    const options = {
+      publicKey: {
+        ...pk,
+        challenge: b64uToBuf(pk.challenge),
+        allowCredentials: (pk.allowCredentials || []).map((c) => ({ ...c, id: b64uToBuf(c.id) })),
+      },
+    };
+    const assertion = await navigator.credentials.get(options);
+    const json = {
+      id: assertion.id,
+      rawId: bufToB64u(assertion.rawId),
+      type: assertion.type,
+      response: {
+        clientDataJSON: bufToB64u(assertion.response.clientDataJSON),
+        authenticatorData: bufToB64u(assertion.response.authenticatorData),
+        signature: bufToB64u(assertion.response.signature),
+        userHandle: assertion.response.userHandle ? bufToB64u(assertion.response.userHandle) : null,
+      },
+    };
+    const done = await api("/biometric/verify/complete", { method: "POST", body: { credential: json } });
+    $("pharmacyBioOut").value = pretty(done);
+    toast("Biometric verified", "success");
+    await pharmacyLoadBiometricStatus();
+  } catch (err) {
+    $("pharmacyBioOut").value = pretty({ ok: false, error: err.message });
+    toast(err.message, "error");
+  }
 }
 
 async function onVerifyOtp(e) {
@@ -1110,6 +1241,8 @@ function wire() {
   $("batchTamperBtn").addEventListener("click", onTamperBatch);
 
   $("dispenseForm").addEventListener("submit", onDispense);
+  $("pharmacyEnrollBtn").addEventListener("click", pharmacyEnrollBiometric);
+  $("pharmacyVerifyBtn").addEventListener("click", pharmacyVerifyBiometric);
   $("auditLoadBtn").addEventListener("click", onLoadAudit);
   $("adminLoadUserAuditBtn").addEventListener("click", onLoadUserAudit);
   $("auditToggleJsonBtn").addEventListener("click", () => {
