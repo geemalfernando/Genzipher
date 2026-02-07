@@ -42,7 +42,11 @@ export default function Signup() {
             navigate('/dashboard')
           } catch (err) {
             console.error('Biometric enrollment error:', err)
-            toast('Account created but biometric enrollment failed. Please enroll later.', 'warning')
+            if (String(err?.message || '') === 'credential_exists') {
+              toast('This device biometric is already enrolled on another pharmacy account. Login to that account, or enroll using a different device/browser.', 'warning')
+            } else {
+              toast('Account created but biometric enrollment failed. Please enroll later.', 'warning')
+            }
             navigate('/dashboard')
           } finally {
             setBiometricEnrolling(false)
@@ -130,7 +134,8 @@ export default function Signup() {
     })
 
     if (result.ok) {
-      toast('Biometric enrolled successfully!', 'success')
+      // Enroll does not count as verified; the pharmacy session still requires a verify step.
+      toast(result.alreadyEnrolled ? 'Biometric already enrolled. Please verify to continue.' : 'Biometric enrolled. Please verify to continue.', result.alreadyEnrolled ? 'warning' : 'success')
     }
   }
 

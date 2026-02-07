@@ -9,6 +9,7 @@ export default function AdminDashboard() {
   const { token, logout } = useAuth()
   const [loading, setLoading] = useState(false)
   const [user, setUser] = useState(null)
+  const [activeSection, setActiveSection] = useState('dashboard')
 
   // User Activity (Audit Logs)
   const [userActivity, setUserActivity] = useState({
@@ -39,6 +40,13 @@ export default function AdminDashboard() {
   const [systemAuditLogs, setSystemAuditLogs] = useState([])
   const [systemAuditJson, setSystemAuditJson] = useState(null)
   const [showSystemAuditJson, setShowSystemAuditJson] = useState(false)
+
+  // Analytics / Fraud management
+  const [analytics, setAnalytics] = useState(null)
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
+  const [analyticsWindowHours, setAnalyticsWindowHours] = useState(24)
+  const [analyticsBucketMinutes, setAnalyticsBucketMinutes] = useState(60)
+  const [showAnalyticsJson, setShowAnalyticsJson] = useState(false)
 
   useEffect(() => {
     if (!token) {
@@ -204,6 +212,63 @@ export default function AdminDashboard() {
     )
   }
 
+  const renderSparkBars = (values, { height = 64, color = 'var(--healthcare-primary)' } = {}) => {
+    const arr = Array.isArray(values) ? values : []
+    if (arr.length === 0) return <div className="empty-state">—</div>
+    const max = Math.max(...arr.map((n) => Number(n) || 0), 1)
+    return (
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: '2px', height }}>
+        {arr.map((v, idx) => {
+          const n = Number(v) || 0
+          const pct = Math.max(0, Math.min(100, (n / max) * 100))
+          return (
+            <div
+              key={idx}
+              title={`${n}`}
+              style={{
+                flex: 1,
+                height: `${pct}%`,
+                background: color,
+                opacity: n === 0 ? 0.2 : 0.85,
+                borderRadius: '2px',
+                minWidth: '2px',
+              }}
+            />
+          )
+        })}
+      </div>
+    )
+  }
+
+  const handleLoadAnalytics = async () => {
+    try {
+      setAnalyticsLoading(true)
+      const params = new URLSearchParams()
+      params.set('windowHours', String(Number(analyticsWindowHours) || 24))
+      params.set('bucketMinutes', String(Number(analyticsBucketMinutes) || 60))
+      const data = await api(`/analytics/summary?${params.toString()}`)
+      setAnalytics(data)
+      toast('Analytics loaded', 'success')
+    } catch (err) {
+      toast(err.message || 'Failed to load analytics', 'error')
+      setAnalytics(null)
+    } finally {
+      setAnalyticsLoading(false)
+    }
+  }
+
+  const handleUnlockPasswordReset = async (userId) => {
+    if (!userId) return
+    if (!confirm(`Unlock password reset for ${userId}?`)) return
+    try {
+      await api('/admin/password-reset/unlock', { method: 'POST', body: { userId } })
+      toast('Password reset unlocked', 'success')
+      await handleLoadAnalytics()
+    } catch (err) {
+      toast(err.message || 'Failed to unlock', 'error')
+    }
+  }
+
   const handleCopyGeneratedCode = async () => {
     if (generatedCode?.code) {
       try {
@@ -304,13 +369,32 @@ export default function AdminDashboard() {
         </div>
 
         <nav className="patient-sidebar-nav">
-          <div className="nav-item active">
+          <button
+            className={`nav-item ${activeSection === 'dashboard' ? 'active' : ''}`}
+            onClick={() => setActiveSection('dashboard')}
+            type="button"
+          >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M3 9L12 2L21 9V20C21 20.5304 20.7893 21.0391 20.4142 21.4142C20.0391 21.7893 19.5304 22 19 22H5C4.46957 22 3.96086 21.7893 3.58579 21.4142C3.21071 21.0391 3 20.5304 3 20V9Z" stroke="currentColor" strokeWidth="2"/>
               <path d="M9 22V12H15V22" stroke="currentColor" strokeWidth="2"/>
             </svg>
             <span>Dashboard</span>
-          </div>
+          </button>
+
+          <button
+            className={`nav-item ${activeSection === 'analytics' ? 'active' : ''}`}
+            onClick={() => setActiveSection('analytics')}
+            type="button"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M4 19V5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <path d="M4 19H20" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <path d="M8 15V11" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <path d="M12 15V7" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <path d="M16 15V9" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+            <span>Analytics</span>
+          </button>
         </nav>
 
         <div className="patient-sidebar-footer">
@@ -327,6 +411,7 @@ export default function AdminDashboard() {
 
       <main className="patient-main">
         <div className="patient-content">
+          {activeSection === 'dashboard' && (
           <div className="dashboard-section">
             <div className="section-header">
               <div>
@@ -578,6 +663,266 @@ export default function AdminDashboard() {
               </div>
             </div>
           </div>
+          )}
+
+          {activeSection === 'analytics' && (
+            <div className="dashboard-section">
+              <div className="section-header">
+                <div>
+                  <h1>Analytics</h1>
+                  <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.9375rem' }}>
+                    Fraud management signals derived from audit logs (rule-based scoring MVP).
+                  </p>
+                </div>
+              </div>
+
+              <div className="healthcare-card" style={{ marginBottom: '2rem' }}>
+                <h2 style={{ marginBottom: '1rem', fontSize: '1.25rem', fontWeight: 600 }}>Analytics & Fraud Management</h2>
+
+                <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">Window (hours)</label>
+                    <input
+                      type="number"
+                      className="form-input"
+                      min="1"
+                      max="720"
+                      value={analyticsWindowHours}
+                      onChange={(e) => setAnalyticsWindowHours(e.target.value)}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Bucket (minutes)</label>
+                    <select
+                      className="form-input"
+                      value={analyticsBucketMinutes}
+                      onChange={(e) => setAnalyticsBucketMinutes(Number(e.target.value))}
+                    >
+                      <option value={15}>15</option>
+                      <option value={30}>30</option>
+                      <option value={60}>60</option>
+                    </select>
+                  </div>
+                  <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
+                    <button onClick={handleLoadAnalytics} className="btn-primary" disabled={analyticsLoading}>
+                      {analyticsLoading ? 'Loading…' : 'Load analytics'}
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => setShowAnalyticsJson((v) => !v)}
+                    className="btn-secondary"
+                    disabled={!analytics}
+                  >
+                    {showAnalyticsJson ? 'Hide JSON' : 'Show JSON'}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!analytics) return toast('Load analytics first', 'warning')
+                      await navigator.clipboard.writeText(JSON.stringify(analytics, null, 2))
+                      toast('Analytics JSON copied', 'success')
+                    }}
+                    className="btn-secondary"
+                    disabled={!analytics}
+                  >
+                    Copy JSON
+                  </button>
+                </div>
+
+                {showAnalyticsJson && analytics && (
+                  <pre
+                    style={{
+                      marginTop: '1rem',
+                      padding: '1rem',
+                      background: 'var(--healthcare-bg)',
+                      borderRadius: '8px',
+                      overflowX: 'auto',
+                      fontSize: '0.8125rem',
+                    }}
+                  >
+                    {JSON.stringify(analytics, null, 2)}
+                  </pre>
+                )}
+              </div>
+
+              {analytics && (
+                <>
+                  <div className="section-grid" style={{ marginBottom: '2rem' }}>
+                    <div className="healthcare-card">
+                      <h3 style={{ marginBottom: '0.5rem' }}>Totals</h3>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.95rem' }}>
+                        <div><strong>Events</strong>: {analytics.totals?.events ?? 0}</div>
+                        <div><strong>Anomalies</strong>: {analytics.totals?.anomalies ?? 0}</div>
+                        <div><strong>Login failed</strong>: {analytics.totals?.loginFailed ?? 0}</div>
+                        <div><strong>Login success</strong>: {analytics.totals?.loginSuccess ?? 0}</div>
+                        <div><strong>Password reset</strong>: {analytics.totals?.passwordResetRequested ?? 0}</div>
+                        <div><strong>Reset locked</strong>: {analytics.totals?.passwordResetLocked ?? 0}</div>
+                        <div><strong>New-device step-up</strong>: {analytics.totals?.newDeviceStepUpIssued ?? 0}</div>
+                        <div><strong>Dispense blocked</strong>: {analytics.totals?.dispenseBlocked ?? 0}</div>
+                      </div>
+                      <p style={{ marginTop: '0.75rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+                        Window: last {analytics.windowHours}h • Buckets: {analytics.bucketMinutes}m
+                      </p>
+                    </div>
+
+                    <div className="healthcare-card">
+                      <h3 style={{ marginBottom: '0.5rem' }}>Event trend</h3>
+                      {renderSparkBars((analytics.series || []).map((b) => b.total))}
+                      <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+                        Bars: total events per bucket
+                      </p>
+                    </div>
+
+                    <div className="healthcare-card">
+                      <h3 style={{ marginBottom: '0.5rem' }}>Login failures</h3>
+                      {renderSparkBars((analytics.series || []).map((b) => b.loginFailed), { color: 'var(--healthcare-danger, #e55353)' })}
+                      <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+                        Bars: auth.login_failed per bucket
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="healthcare-card" style={{ marginBottom: '2rem' }}>
+                    <h3 style={{ marginBottom: '1rem' }}>Top actions</h3>
+                    {(analytics.topActions || []).length === 0 ? (
+                      <p className="empty-state">No data</p>
+                    ) : (
+                      <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '2px solid var(--healthcare-border)' }}>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Action</th>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Count</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {analytics.topActions.slice(0, 15).map((a) => (
+                              <tr key={a.action} style={{ borderBottom: '1px solid var(--healthcare-border)' }}>
+                                <td style={{ padding: '0.75rem', fontFamily: 'monospace' }}>{a.action}</td>
+                                <td style={{ padding: '0.75rem' }}>{a.count}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="healthcare-card" style={{ marginBottom: '2rem' }}>
+                    <h3 style={{ marginBottom: '1rem' }}>Risky users (score)</h3>
+                    {(analytics.riskyUsers || []).length === 0 ? (
+                      <p className="empty-state">No risky users found</p>
+                    ) : (
+                      <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '2px solid var(--healthcare-border)' }}>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>User</th>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Role</th>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Score</th>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Reasons</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {analytics.riskyUsers.slice(0, 10).map((r) => (
+                              <tr key={r.userId} style={{ borderBottom: '1px solid var(--healthcare-border)' }}>
+                                <td style={{ padding: '0.75rem' }}>
+                                  <div style={{ fontWeight: 600 }}>{r.username || r.userId}</div>
+                                  <div style={{ fontFamily: 'monospace', color: 'var(--healthcare-text-muted)', fontSize: '0.8125rem' }}>{r.userId}</div>
+                                </td>
+                                <td style={{ padding: '0.75rem' }}>{r.role || '—'}</td>
+                                <td style={{ padding: '0.75rem' }}>{r.score}</td>
+                                <td style={{ padding: '0.75rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+                                  {(r.reasons || []).slice(0, 3).join(' • ') || '—'}
+                                  {r.passwordResetLockedAt && (
+                                    <div style={{ marginTop: '0.25rem' }}>
+                                      <span className="status-badge">RESET LOCKED</span>{' '}
+                                      <span style={{ fontFamily: 'monospace' }}>{new Date(r.passwordResetLockedAt).toLocaleString()}</span>
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="healthcare-card" style={{ marginBottom: '2rem' }}>
+                    <h3 style={{ marginBottom: '1rem' }}>Suspicious identifiers</h3>
+                    {(analytics.riskyIdentifiers || []).length === 0 ? (
+                      <p className="empty-state">No identifiers flagged</p>
+                    ) : (
+                      <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '2px solid var(--healthcare-border)' }}>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Identifier</th>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Score</th>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Counts</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {analytics.riskyIdentifiers.slice(0, 10).map((r) => (
+                              <tr key={r.identifier} style={{ borderBottom: '1px solid var(--healthcare-border)' }}>
+                                <td style={{ padding: '0.75rem', fontFamily: 'monospace' }}>{r.identifier}</td>
+                                <td style={{ padding: '0.75rem' }}>{r.score}</td>
+                                <td style={{ padding: '0.75rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+                                  {Object.entries(r.counts || {}).map(([k, v]) => `${k}:${v}`).slice(0, 3).join(' • ') || '—'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="healthcare-card">
+                    <h3 style={{ marginBottom: '1rem' }}>Password reset lockouts</h3>
+                    {(analytics.lockedUsers || []).length === 0 ? (
+                      <p className="empty-state">No lockouts</p>
+                    ) : (
+                      <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '2px solid var(--healthcare-border)' }}>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>User</th>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Role</th>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Locked at</th>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Reason</th>
+                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {analytics.lockedUsers.slice(0, 15).map((u) => (
+                              <tr key={u.userId} style={{ borderBottom: '1px solid var(--healthcare-border)' }}>
+                                <td style={{ padding: '0.75rem' }}>
+                                  <div style={{ fontWeight: 600 }}>{u.username || u.userId}</div>
+                                  <div style={{ fontFamily: 'monospace', color: 'var(--healthcare-text-muted)', fontSize: '0.8125rem' }}>{u.userId}</div>
+                                </td>
+                                <td style={{ padding: '0.75rem' }}>{u.role}</td>
+                                <td style={{ padding: '0.75rem', fontFamily: 'monospace' }}>{u.lockedAt ? new Date(u.lockedAt).toLocaleString() : '—'}</td>
+                                <td style={{ padding: '0.75rem', color: 'var(--healthcare-text-muted)' }}>{u.reason || '—'}</td>
+                                <td style={{ padding: '0.75rem' }}>
+                                  <button className="btn-secondary" onClick={() => handleUnlockPasswordReset(u.userId)}>
+                                    Unlock
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
       </main>
     </div>

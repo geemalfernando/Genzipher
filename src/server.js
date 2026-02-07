@@ -200,6 +200,20 @@ function safeNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function clampInt(value, { min, max, fallback }) {
+  const n = safeNumber(value);
+  if (n === null) return fallback;
+  const i = Math.trunc(n);
+  if (i < min) return min;
+  if (i > max) return max;
+  return i;
+}
+
+function floorToBucketMs(ms, bucketMs) {
+  if (!Number.isFinite(ms) || !Number.isFinite(bucketMs) || bucketMs <= 0) return null;
+  return Math.floor(ms / bucketMs) * bucketMs;
+}
+
 function getClientIp(req) {
   const xf = req.header("x-forwarded-for");
   if (xf) return xf.split(",")[0].trim();
@@ -1725,10 +1739,14 @@ async function buildApp() {
     const existing = await Biometric.findOne({ credentialIdB64u: credIdB64u }).lean();
     if (existing) {
       // Idempotent: if this same user already enrolled this credential, treat as success.
-      if (existing.userId === req.auth.sub && existing.isActive) {
-        return res.status(200).json({ ok: true, alreadyEnrolled: true });
+      if (existing.userId === req.auth.sub) {
+        const isActive = existing.isActive !== false;
+        if (!isActive) {
+          await Biometric.updateOne({ id: existing.id }, { $set: { isActive: true, publicKeyJson, lastUsedAt: null } });
+        }
+        return res.status(200).json({ ok: true, alreadyEnrolled: true, reactivated: !isActive });
       }
-      return res.status(409).json({ error: "credential_exists", message: "This biometric credential is already enrolled" });
+      return res.status(409).json({ error: "credential_exists", message: "This biometric credential is already enrolled (try logging into the account that enrolled it)." });
     }
 
     const attObjBuf = bytesFromUnknown(credential?.response?.attestationObject);
@@ -2622,6 +2640,271 @@ async function buildApp() {
 
     const entries = await AuditEntry.find(filter).sort({ ts: -1 }).limit(200).lean();
     res.json({ count: entries.length, entries });
+  }));
+
+  // --- Analytics / Fraud management (admin) ---
+  app.get("/analytics/summary", requireAuth, requireRole(["admin"]), asyncRoute(async (req, res) => {
+    const windowHours = clampInt(req.query?.windowHours, { min: 1, max: 24 * 30, fallback: 24 });
+    const bucketMinutes = clampInt(req.query?.bucketMinutes, { min: 5, max: 60, fallback: 60 });
+    const bucketMs = bucketMinutes * 60 * 1000;
+    const maxEntries = clampInt(req.query?.maxEntries, { min: 200, max: 20000, fallback: 5000 });
+
+    const to = new Date();
+    const from = new Date(Date.now() - windowHours * 60 * 60 * 1000);
+    const fromIso = from.toISOString();
+    const toIso = to.toISOString();
+
+    const entries = await AuditEntry.find(
+      { ts: { $gte: fromIso, $lte: toIso } },
+      { _id: 0, __v: 0 }
+    )
+      .sort({ ts: 1 })
+      .limit(maxEntries)
+      .lean();
+
+    const ACTION_WEIGHTS = {
+      "auth.login_failed": 3,
+      "auth.login_blocked": 6,
+      "auth.otp_verify_failed": 2,
+      "anomaly.otp_failed_multiple": 8,
+      "auth.password_reset_requested": 4,
+      "auth.password_reset_locked": 10,
+      "anomaly.password_reset_rate_limited": 12,
+      "anomaly.password_reset_new_device": 8,
+      "auth.new_device_magic_link_sent": 5,
+      "auth.step_up_new_device_otp_issued": 5,
+      "clinic.code_issued": 3,
+      "dispense.blocked": 8,
+    };
+
+    const actionCounts = new Map();
+    const identifierRisk = new Map(); // identifier -> { score, counts }
+    const userRisk = new Map(); // userId -> { score, counts, reasons:Set }
+
+    const initBucket = (key) => ({
+      bucketStart: key,
+      total: 0,
+      loginFailed: 0,
+      loginSuccess: 0,
+      otpVerifyFailed: 0,
+      passwordResetRequested: 0,
+      passwordResetLocked: 0,
+      newDeviceStepUpIssued: 0,
+      clinicCodeIssued: 0,
+      dispenseBlocked: 0,
+      patientPreRegister: 0,
+      anomalies: 0,
+    });
+
+    const fromMs = Date.parse(fromIso);
+    const toMs = Date.parse(toIso);
+    const startMs = floorToBucketMs(fromMs, bucketMs);
+    const endMs = floorToBucketMs(toMs, bucketMs);
+    const seriesMap = new Map();
+    if (startMs !== null && endMs !== null) {
+      for (let t = startMs; t <= endMs; t += bucketMs) {
+        const key = new Date(t).toISOString();
+        seriesMap.set(key, initBucket(key));
+      }
+    }
+
+    const addUserRisk = ({ userId, action, entry, extraWeight = 0, reason = null }) => {
+      if (!isNonEmptyString(userId)) return;
+      const key = String(userId);
+      const rec = userRisk.get(key) || { userId: key, score: 0, counts: {}, reasons: new Set() };
+      const base = ACTION_WEIGHTS[action] || (String(action).startsWith("anomaly.") ? 10 : 0);
+      const w = base + (safeNumber(extraWeight) ?? 0);
+      if (w !== 0) rec.score += w;
+      rec.counts[action] = (rec.counts[action] || 0) + 1;
+      if (reason) rec.reasons.add(String(reason).slice(0, 160));
+      const detailReason = entry?.details?.reason;
+      if (isNonEmptyString(detailReason)) rec.reasons.add(String(detailReason).slice(0, 160));
+      userRisk.set(key, rec);
+    };
+
+    const addIdentifierRisk = ({ identifier, action }) => {
+      if (!isNonEmptyString(identifier)) return;
+      const key = String(identifier).trim();
+      const rec = identifierRisk.get(key) || { identifier: key, score: 0, counts: {} };
+      const base = ACTION_WEIGHTS[action] || (String(action).startsWith("anomaly.") ? 10 : 0);
+      rec.score += base;
+      rec.counts[action] = (rec.counts[action] || 0) + 1;
+      identifierRisk.set(key, rec);
+    };
+
+    for (const e of entries) {
+      const action = String(e.action || "");
+      actionCounts.set(action, (actionCounts.get(action) || 0) + 1);
+
+      const tsMs = Date.parse(String(e.ts || ""));
+      const bMs = floorToBucketMs(tsMs, bucketMs);
+      const bKey = bMs !== null ? new Date(bMs).toISOString() : null;
+      const bucket = bKey ? (seriesMap.get(bKey) || initBucket(bKey)) : null;
+      if (bucket && bKey && !seriesMap.has(bKey)) seriesMap.set(bKey, bucket);
+      if (bucket) bucket.total += 1;
+
+      if (action === "auth.login_failed") {
+        if (bucket) bucket.loginFailed += 1;
+        addIdentifierRisk({ identifier: e.actor?.identifier, action });
+      }
+      if (action === "auth.login_success") {
+        if (bucket) bucket.loginSuccess += 1;
+      }
+      if (action === "auth.otp_verify_failed") {
+        if (bucket) bucket.otpVerifyFailed += 1;
+      }
+      if (action === "auth.password_reset_requested") {
+        if (bucket) bucket.passwordResetRequested += 1;
+      }
+      if (action === "auth.password_reset_locked") {
+        if (bucket) bucket.passwordResetLocked += 1;
+      }
+      if (action === "auth.new_device_magic_link_sent" || action === "auth.step_up_new_device_otp_issued") {
+        if (bucket) bucket.newDeviceStepUpIssued += 1;
+      }
+      if (action === "clinic.code_issued") {
+        if (bucket) bucket.clinicCodeIssued += 1;
+      }
+      if (action === "dispense.blocked") {
+        if (bucket) bucket.dispenseBlocked += 1;
+      }
+      if (action === "patient.pre_register") {
+        if (bucket) bucket.patientPreRegister += 1;
+      }
+      if (action.startsWith("anomaly.")) {
+        if (bucket) bucket.anomalies += 1;
+      }
+
+      const actorUserId =
+        (isNonEmptyString(e.actor?.userId) && String(e.actor.userId)) ||
+        (isNonEmptyString(e.actor?.patientId) && String(e.actor.patientId)) ||
+        (isNonEmptyString(e.details?.patientId) && String(e.details.patientId)) ||
+        (isNonEmptyString(e.details?.pharmacistId) && String(e.details.pharmacistId)) ||
+        (isNonEmptyString(e.details?.unlockedUserId) && String(e.details.unlockedUserId)) ||
+        null;
+
+      let extra = 0;
+      let reason = null;
+      if (action === "patient.pre_register") {
+        const trustScore = safeNumber(e.details?.trustScore);
+        if (trustScore !== null && trustScore < 50) {
+          extra += 6;
+          reason = `low_trust_score:${trustScore}`;
+        }
+        const ipReuse = safeNumber(e.details?.ipReuseCount);
+        if (ipReuse !== null && ipReuse >= 3) {
+          extra += 4;
+          reason = reason ? `${reason}, ip_reuse:${ipReuse}` : `ip_reuse:${ipReuse}`;
+        }
+      }
+
+      addUserRisk({ userId: actorUserId, action, entry: e, extraWeight: extra, reason });
+    }
+
+    const topActions = [...actionCounts.entries()]
+      .map(([action, count]) => ({ action, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20);
+
+    const series = [...seriesMap.values()].sort((a, b) => String(a.bucketStart).localeCompare(String(b.bucketStart)));
+
+    const riskyUsersRaw = [...userRisk.values()]
+      .map((r) => ({ ...r, reasons: [...r.reasons] }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 20);
+
+    const riskyIds = [...identifierRisk.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 20);
+
+    const riskUserIds = riskyUsersRaw.map((r) => r.userId);
+    const users = riskUserIds.length
+      ? await User.find(
+          { id: { $in: riskUserIds } },
+          { _id: 0, id: 1, username: 1, role: 1, status: 1, passwordResetLockedAt: 1, passwordResetLockedReason: 1 }
+        ).lean()
+      : [];
+    const userById = new Map(users.map((u) => [u.id, u]));
+    const riskyUsers = riskyUsersRaw.map((r) => {
+      const u = userById.get(r.userId) || null;
+      return {
+        userId: r.userId,
+        username: u?.username || null,
+        role: u?.role || null,
+        status: u?.status || null,
+        passwordResetLockedAt: u?.passwordResetLockedAt ? new Date(u.passwordResetLockedAt).toISOString() : null,
+        passwordResetLockedReason: u?.passwordResetLockedReason || null,
+        score: r.score,
+        counts: r.counts,
+        reasons: r.reasons,
+      };
+    });
+
+    const lockedUsers = await User.find(
+      { passwordResetLockedAt: { $ne: null } },
+      { _id: 0, id: 1, username: 1, role: 1, status: 1, passwordResetLockedAt: 1, passwordResetLockedReason: 1 }
+    )
+      .sort({ passwordResetLockedAt: -1 })
+      .limit(50)
+      .lean();
+
+    const totals = series.reduce(
+      (acc, b) => {
+        acc.events += b.total;
+        acc.loginFailed += b.loginFailed;
+        acc.loginSuccess += b.loginSuccess;
+        acc.otpVerifyFailed += b.otpVerifyFailed;
+        acc.passwordResetRequested += b.passwordResetRequested;
+        acc.passwordResetLocked += b.passwordResetLocked;
+        acc.newDeviceStepUpIssued += b.newDeviceStepUpIssued;
+        acc.clinicCodeIssued += b.clinicCodeIssued;
+        acc.dispenseBlocked += b.dispenseBlocked;
+        acc.patientPreRegister += b.patientPreRegister;
+        acc.anomalies += b.anomalies;
+        return acc;
+      },
+      {
+        events: 0,
+        loginFailed: 0,
+        loginSuccess: 0,
+        otpVerifyFailed: 0,
+        passwordResetRequested: 0,
+        passwordResetLocked: 0,
+        newDeviceStepUpIssued: 0,
+        clinicCodeIssued: 0,
+        dispenseBlocked: 0,
+        patientPreRegister: 0,
+        anomalies: 0,
+      }
+    );
+
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+      action: "analytics.summary_viewed",
+      details: { windowHours, bucketMinutes, returnedEntries: entries.length },
+    });
+
+    res.json({
+      ok: true,
+      windowHours,
+      bucketMinutes,
+      from: fromIso,
+      to: toIso,
+      counts: { entries: entries.length, maxEntries },
+      totals,
+      topActions,
+      series,
+      riskyUsers,
+      riskyIdentifiers: riskyIds,
+      lockedUsers: lockedUsers.map((u) => ({
+        userId: u.id,
+        username: u.username,
+        role: u.role,
+        status: u.status,
+        lockedAt: u.passwordResetLockedAt ? new Date(u.passwordResetLockedAt).toISOString() : null,
+        reason: u.passwordResetLockedReason || null,
+      })),
+    });
   }));
 
   // --- Helpful demo data endpoints (read-only, authenticated) ---
