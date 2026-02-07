@@ -303,6 +303,12 @@ function getPendingResetState() {
   }
 }
 
+function resetRemainingAttempts(maxAttempts, attemptsUsed) {
+  const remaining = Math.max(0, Number(maxAttempts || 3) - Number(attemptsUsed || 0));
+  const el = $("forgot_remaining");
+  if (el) el.textContent = String(remaining);
+}
+
 async function api(path, { method = "GET", body } = {}) {
   const token = getToken();
   const deviceId = getDeviceId();
@@ -317,6 +323,12 @@ async function api(path, { method = "GET", body } = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    if (path === "/auth/forgot-password/verify-otp" && (data?.remainingAttempts !== undefined || data?.maxAttempts !== undefined)) {
+      const maxA = Number(data?.maxAttempts || 3);
+      const rem = Number(data?.remainingAttempts ?? 0);
+      const used = Math.max(0, maxA - rem);
+      resetRemainingAttempts(maxA, used);
+    }
     const msg = data?.error ? `${data.error}${data.message ? `: ${data.message}` : ""}` : `HTTP ${res.status}`;
     throw new Error(msg);
   }
@@ -559,9 +571,7 @@ async function onForgotRequest(e) {
   e.preventDefault();
   try {
     const identifier = $("forgot_identifier").value.trim();
-    const newPassword = $("forgot_new_password").value;
     if (!identifier) return toast("Enter your username or email.", "error");
-    if (!newPassword || newPassword.length < 8) return toast("New password must be at least 8 characters.", "error");
 
     const out = await api("/auth/forgot-password/request", {
       method: "POST",
@@ -569,9 +579,11 @@ async function onForgotRequest(e) {
     });
 
     if (out.otpRequestId) {
-      setPendingResetState({ otpRequestId: out.otpRequestId, identifier });
+      setPendingResetState({ otpRequestId: out.otpRequestId, identifier, resetToken: null });
       $("forgotOtpBox").hidden = false;
+      $("forgotSetBox").hidden = true;
       $("forgot_otp_id").textContent = out.otpRequestId;
+      resetRemainingAttempts(3, 0);
       toast(out.delivery === "email" ? "OTP sent to your email." : "OTP issued. Check server logs (MVP).", "warning");
     } else {
       toast("If that account exists and has an email, you’ll receive a code shortly.", "success");
@@ -587,18 +599,17 @@ async function onForgotConfirm(e) {
     const pending = getPendingResetState();
     if (!pending?.otpRequestId) return toast("No pending reset request.", "error");
     const otp = $("forgot_otp").value.trim();
-    const newPassword = $("forgot_new_password").value;
-    await api("/auth/forgot-password/confirm", {
+    const out = await api("/auth/forgot-password/verify-otp", {
       method: "POST",
-      body: { otpRequestId: pending.otpRequestId, otp, newPassword },
+      body: { otpRequestId: pending.otpRequestId, otp },
     });
-    setPendingResetState(null);
+    setPendingResetState({ ...pending, resetToken: out.resetToken });
     $("forgotOtpBox").hidden = true;
-    $("forgot_otp").value = "";
-    toast("Password reset. You can login now.", "success");
-    $("login_identifier").value = pending.identifier || $("login_identifier").value;
-    $("login_password").value = "";
+    $("forgotSetBox").hidden = false;
+    toast("OTP verified. Set a new password.", "success");
   } catch (err) {
+    // Try to extract remaining attempts from the error message payload (api() throws string only).
+    // We don't have structured errors here, so show the generic message.
     toast(err.message, "error");
   }
 }
@@ -609,6 +620,25 @@ async function onForgotResend() {
   try {
     const out = await api("/auth/resend-otp", { method: "POST", body: { otpRequestId: pending.otpRequestId } });
     toast(`OTP resent (${out.delivery}).`, "success");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function onForgotSet(e) {
+  e.preventDefault();
+  try {
+    const pending = getPendingResetState();
+    if (!pending?.resetToken) return toast("Verify OTP first.", "error");
+    const newPassword = $("forgot_new_password").value;
+    if (!newPassword || newPassword.length < 8) return toast("New password must be at least 8 characters.", "error");
+    await api("/auth/forgot-password/set-password", { method: "POST", body: { resetToken: pending.resetToken, newPassword } });
+    setPendingResetState(null);
+    $("forgotSetBox").hidden = true;
+    $("forgot_new_password").value = "";
+    toast("Password reset. You can login now.", "success");
+    $("login_identifier").value = pending.identifier || $("login_identifier").value;
+    $("login_password").value = "";
   } catch (err) {
     toast(err.message, "error");
   }
@@ -1575,6 +1605,7 @@ function wire() {
   $("forgotRequestForm")?.addEventListener("submit", onForgotRequest);
   $("forgotConfirmForm")?.addEventListener("submit", onForgotConfirm);
   $("forgotResendBtn")?.addEventListener("click", onForgotResend);
+  $("forgotSetForm")?.addEventListener("submit", onForgotSet);
   $("otpForm").addEventListener("submit", onVerifyOtp);
   $("otpResendBtn").addEventListener("click", onResendOtp);
   $("logoutBtn").addEventListener("click", onLogout);

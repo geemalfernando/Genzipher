@@ -289,7 +289,10 @@ async function verifyOtpRequest({ otpRequestId, otp, expectedPurpose }) {
   }
   if (request.used) return { ok: false, status: 409, body: { error: "otp_already_used" } };
   if (request.expiresAt.getTime() < Date.now()) return { ok: false, status: 401, body: { error: "otp_expired" } };
-  if (request.attempts >= 5) return { ok: false, status: 429, body: { error: "otp_attempts_exceeded" } };
+  const maxAttempts = expectedPurpose === "RESET" ? 3 : 5;
+  if (request.attempts >= maxAttempts) {
+    return { ok: false, status: 423, body: { error: "otp_locked", maxAttempts } };
+  }
 
   const matches = hashOtp(otp) === request.otpHash;
   if (!matches) {
@@ -307,7 +310,9 @@ async function verifyOtpRequest({ otpRequestId, otp, expectedPurpose }) {
         details: { otpRequestId, purpose: request.purpose, attempts: nextAttempts },
       });
     }
-    return { ok: false, status: 401, body: { error: "invalid_otp" } };
+    const remainingAttempts = Math.max(0, maxAttempts - nextAttempts);
+    const status = remainingAttempts === 0 ? 423 : 401;
+    return { ok: false, status, body: { error: remainingAttempts === 0 ? "otp_locked" : "invalid_otp", remainingAttempts, maxAttempts } };
   }
 
   await OtpRequest.updateOne({ id: otpRequestId }, { $set: { used: true }, $inc: { attempts: 1 } });
@@ -1158,17 +1163,81 @@ async function buildApp() {
     return res.json({ ok: true, ...otpInfo });
   }));
 
-  app.post("/auth/forgot-password/confirm", asyncRoute(async (req, res) => {
-    const { otpRequestId, otp, newPassword } = req.body || {};
-    if (!isNonEmptyString(otpRequestId) || !isNonEmptyString(otp) || !looksLikePassword(newPassword)) {
-      return res.status(400).json({ error: "bad_request", message: "otpRequestId + otp + newPassword required" });
+  app.post("/auth/forgot-password/verify-otp", asyncRoute(async (req, res) => {
+    const { otpRequestId, otp } = req.body || {};
+    if (!isNonEmptyString(otpRequestId) || !isNonEmptyString(otp)) {
+      return res.status(400).json({ error: "bad_request", message: "otpRequestId + otp required" });
+    }
+
+    const reqRecord = await OtpRequest.findOne({ id: otpRequestId }).lean();
+    if (!reqRecord) return res.status(404).json({ error: "otp_request_not_found" });
+
+    const user = await User.findOne({ id: reqRecord.userId }).lean();
+    if (!user || user.status !== "active") return res.status(404).json({ error: "user_not_found" });
+
+    if (user.passwordResetLockedUntil && user.passwordResetLockedUntil.getTime() > Date.now()) {
+      return res.status(403).json({ error: "password_reset_locked_admin_required" });
     }
 
     const verified = await verifyOtpRequest({ otpRequestId, otp, expectedPurpose: "RESET" });
-    if (!verified.ok) return res.status(verified.status).json(verified.body);
+    if (!verified.ok) {
+      // If max attempts exceeded, lock the user's password reset until admin unlock.
+      if (verified.body?.error === "otp_locked") {
+        await User.updateOne(
+          { id: user.id },
+          {
+            $set: {
+              passwordResetLockedUntil: new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
+              passwordResetLockedAt: new Date(),
+              passwordResetLockedReason: "otp_failed_3",
+              passwordResetLockedBy: null,
+            },
+          }
+        );
+        await auditAppend({
+          actor: { userId: user.id, role: user.role, username: user.username },
+          action: "auth.password_reset_locked",
+          details: { otpRequestId },
+        });
+        return res.status(423).json({ error: "password_reset_locked_admin_required" });
+      }
+      return res.status(verified.status).json(verified.body);
+    }
 
-    const user = await User.findOne({ id: verified.request.userId }).lean();
+    await auditAppend({
+      actor: { userId: user.id, role: user.role, username: user.username },
+      action: "auth.password_reset_otp_verified",
+      details: { otpRequestId },
+    });
+
+    const resetToken = jwtSignHs256({
+      payload: { sub: user.id, purpose: "RESET_PASSWORD", otpRequestId },
+      secret: JWT_SECRET,
+      expiresInSeconds: 10 * 60,
+    });
+
+    return res.json({ ok: true, resetToken });
+  }));
+
+  app.post("/auth/forgot-password/set-password", asyncRoute(async (req, res) => {
+    const { resetToken, newPassword } = req.body || {};
+    if (!isNonEmptyString(resetToken) || !looksLikePassword(newPassword)) {
+      return res.status(400).json({ error: "bad_request", message: "resetToken + newPassword required" });
+    }
+
+    const verifiedJwt = jwtVerifyHs256({ token: String(resetToken).trim(), secret: JWT_SECRET });
+    if (!verifiedJwt.ok) return res.status(401).json({ error: "invalid_reset_token" });
+    const payload = verifiedJwt.payload || {};
+    if (payload.purpose !== "RESET_PASSWORD" || !isNonEmptyString(payload.sub) || !isNonEmptyString(payload.otpRequestId)) {
+      return res.status(401).json({ error: "invalid_reset_token" });
+    }
+
+    const user = await User.findOne({ id: payload.sub }).lean();
     if (!user || user.status !== "active") return res.status(404).json({ error: "user_not_found" });
+
+    if (user.passwordResetLockedUntil && user.passwordResetLockedUntil.getTime() > Date.now()) {
+      return res.status(403).json({ error: "password_reset_locked_admin_required" });
+    }
 
     await User.updateOne({ id: user.id }, { $set: { password: hashPasswordScrypt(newPassword) } });
 
@@ -1178,7 +1247,7 @@ async function buildApp() {
     await auditAppend({
       actor: { userId: user.id, role: user.role, username: user.username },
       action: "auth.password_reset_completed",
-      details: { otpRequestId },
+      details: { otpRequestId: payload.otpRequestId },
     });
 
     return res.json({ ok: true });
@@ -1793,6 +1862,36 @@ async function buildApp() {
         },
       });
     }
+  }));
+
+  // Admin: unlock password reset after OTP lockout
+  app.post("/admin/password-reset/unlock", requireAuth, requireRole(["admin"]), asyncRoute(async (req, res) => {
+    const { userId, identifier } = req.body || {};
+    const id = isNonEmptyString(userId) ? String(userId).trim() : isNonEmptyString(identifier) ? String(identifier).trim() : "";
+    if (!isNonEmptyString(id)) return res.status(400).json({ error: "bad_request", message: "userId or identifier required" });
+
+    const user = await User.findOne({ $or: [{ id }, { username: id }, { email: id }] }).lean();
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+
+    await User.updateOne(
+      { id: user.id },
+      {
+        $set: {
+          passwordResetLockedUntil: null,
+          passwordResetLockedAt: null,
+          passwordResetLockedReason: null,
+          passwordResetLockedBy: req.auth.sub,
+        },
+      }
+    );
+
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+      action: "admin.password_reset_unlocked",
+      details: { unlockedUserId: user.id, unlockedUsername: user.username },
+    });
+
+    return res.json({ ok: true, userId: user.id, username: user.username });
   }));
 
   // Admin: check SMTP connectivity/auth without sending an email
