@@ -375,6 +375,10 @@ async function api(path, { method = "GET", body } = {}) {
       const used = Math.max(0, maxA - rem);
       resetRemainingAttempts(maxA, used);
     }
+    if (res.status === 401 && ["invalid_token", "token_expired", "missing_bearer_token"].includes(data?.error)) {
+      setToken(null);
+      throw new Error("Session expired. Please login again.");
+    }
     const msg = data?.error ? `${data.error}${data.message ? `: ${data.message}` : ""}` : `HTTP ${res.status}`;
     throw new Error(msg);
   }

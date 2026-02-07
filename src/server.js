@@ -239,7 +239,10 @@ function requireAuth(req, res, next) {
   const token = getBearer(req);
   if (!token) return res.status(401).json({ error: "missing_bearer_token" });
   const result = jwtVerifyHs256({ token, secret: JWT_SECRET });
-  if (!result.ok) return res.status(401).json({ error: "invalid_token", detail: result.error });
+  if (!result.ok) {
+    if (result.error === "expired") return res.status(401).json({ error: "token_expired" });
+    return res.status(401).json({ error: "invalid_token", detail: result.error });
+  }
   req.auth = result.payload;
   return next();
 }
