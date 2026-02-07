@@ -1,0 +1,71 @@
+:root {
+  --brand: #5b4bff;
+  --brand2: #00b3ff;
+}
+
+body {
+  background: radial-gradient(1200px 500px at 15% 0%, rgba(91, 75, 255, 0.18), transparent),
+    radial-gradient(1200px 500px at 85% 0%, rgba(0, 179, 255, 0.14), transparent),
+    var(--bgColor-default);
+}
+
+.gz-hero {
+  background: linear-gradient(135deg, rgba(91, 75, 255, 0.18), rgba(0, 179, 255, 0.12));
+  border: 1px solid var(--borderColor-default);
+  border-radius: 12px;
+}
+
+.gz-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--borderColor-default);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(8px);
+}
+
+.gz-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+@media (min-width: 1012px) {
+  .gz-grid {
+    grid-template-columns: 1.1fr 0.9fr;
+  }
+}
+
+.gz-mono {
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+}
+
+textarea.gz-json {
+  min-height: 180px;
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-size: 12px;
+}
+
+.gz-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gz-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--borderColor-muted);
+}
+
+.gz-dot.ok {
+  background: #2da44e;
+}
+
+.gz-dot.bad {
+  background: #cf222e;
+}
+

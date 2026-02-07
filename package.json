@@ -1,9 +1,24 @@
 {
-  "name": "demo-repo",
-  "version": "0.2.0",
-  "description": "A sample package.json",
+  "name": "genzipher-healthcare-trust-platform-mvp",
+  "version": "0.1.0",
+  "description": "Healthcare Security & Trust Platform MVP (identity, signed prescriptions, medicine provenance, encrypted vitals, tamper-evident audit).",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "seed": "node scripts/seed.js",
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "demo:attack": "node scripts/demo-attack.js"
+  },
   "dependencies": {
-    "@primer/css": "17.0.1"
+    "@primer/css": "17.0.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.19.2",
+    "mongoose": "^8.10.0"
   },
   "license": "MIT"
 }

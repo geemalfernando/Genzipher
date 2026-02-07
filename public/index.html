@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en" data-color-mode="light" data-light-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GenZipher Healthcare Trust Platform (MVP)</title>
+    <link rel="stylesheet" href="https://unpkg.com/@primer/css@17.0.1/dist/primer.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="p-3 p-md-4">
+    <main class="container-xl">
+      <div class="gz-hero p-3 p-md-4 mb-3">
+        <div class="d-flex flex-justify-between flex-items-center flex-wrap gap-2">
+          <div>
+            <div class="d-flex flex-items-center gap-2">
+              <span class="Label Label--success">MVP</span>
+              <h1 class="f3 mb-0">GenZipher Healthcare Security & Trust Platform</h1>
+            </div>
+            <p class="color-fg-muted mt-1 mb-0">
+              Blocks identity hijacking • Encrypts vitals • Prevents prescription tamper • Stops placebo swaps
+            </p>
+          </div>
+          <div class="gz-pill">
+            <span class="gz-status">
+              <span id="apiDot" class="gz-dot"></span>
+              <span id="apiStatusText" class="text-small color-fg-muted">Checking API…</span>
+            </span>
+            <span class="color-fg-muted">•</span>
+            <span class="text-small">Session: <span id="whoami" class="gz-mono">—</span></span>
+            <button id="logoutBtn" class="btn btn-sm" hidden>Logout</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="toast" class="flash" hidden></div>
+
+      <div class="gz-grid">
+        <section class="Box p-3" id="loginBox">
+          <h2 class="f4">Login</h2>
+          <p class="color-fg-muted text-small">
+            Demo MFA code for doctor/pharmacy/manufacturer/admin: <span class="gz-mono">123456</span>
+          </p>
+          <form id="loginForm" class="d-flex flex-column gap-2">
+            <label class="form-group">
+              <div class="text-small color-fg-muted">Username</div>
+              <input id="login_username" class="form-control input-block" value="doctor1" />
+            </label>
+            <label class="form-group">
+              <div class="text-small color-fg-muted">Password</div>
+              <input id="login_password" class="form-control input-block" type="password" value="password123" />
+            </label>
+            <label class="form-group">
+              <div class="text-small color-fg-muted">MFA (optional)</div>
+              <input id="login_mfa" class="form-control input-block" placeholder="123456" />
+            </label>
+            <button class="btn btn-primary" type="submit">Login</button>
+            <div class="color-fg-muted text-small">
+              Try: <span class="gz-mono">doctor1</span>, <span class="gz-mono">mfg1</span>, <span class="gz-mono">pharmacy1</span>, <span class="gz-mono">admin1</span>, <span class="gz-mono">patient1</span>
+            </div>
+          </form>
+        </section>
+
+        <section class="Box p-3" id="appBox" hidden>
+          <h2 class="f4">Role Workspace</h2>
+          <p class="color-fg-muted text-small">
+            Current role: <span id="currentRole" class="gz-mono">—</span>
+          </p>
+
+          <div id="role_doctor" hidden>
+            <h3 class="f5 mt-3">Doctor: Sign Prescription</h3>
+            <form id="rxForm" class="d-flex flex-column gap-2">
+              <label class="form-group">
+                <div class="text-small color-fg-muted">Patient</div>
+                <select id="rx_patientUserId" class="form-select input-block"></select>
+              </label>
+              <div class="d-flex gap-2">
+                <label class="form-group flex-1">
+                  <div class="text-small color-fg-muted">Medicine ID</div>
+                  <input id="rx_medicineId" class="form-control input-block" value="MED-AMOX-500" />
+                </label>
+                <label class="form-group flex-1">
+                  <div class="text-small color-fg-muted">Dosage</div>
+                  <input id="rx_dosage" class="form-control input-block" value="500mg" />
+                </label>
+              </div>
+              <label class="form-group">
+                <div class="text-small color-fg-muted">Duration (days)</div>
+                <input id="rx_durationDays" class="form-control input-block" type="number" value="7" />
+              </label>
+              <button class="btn btn-primary" type="submit">Create + Sign Rx</button>
+            </form>
+
+            <div class="d-flex flex-justify-between flex-items-center mt-3">
+              <h4 class="f6 mb-0">Signed Prescription JSON</h4>
+              <div class="d-flex gap-2">
+                <button id="copyRxBtn" class="btn btn-sm">Copy</button>
+                <button id="rxTamperBtn" class="btn btn-sm btn-danger">Tamper</button>
+                <button id="rxVerifyBtn" class="btn btn-sm">Verify</button>
+              </div>
+            </div>
+            <textarea id="rx_out" class="form-control input-block gz-json mt-2" placeholder="Create an Rx to populate…"></textarea>
+            <textarea id="rx_verify_out" class="form-control input-block gz-json mt-2" placeholder="Verification result…"></textarea>
+          </div>
+
+          <div id="role_manufacturer" hidden>
+            <h3 class="f5 mt-3">Manufacturer: Sign Batch Certificate</h3>
+            <form id="batchForm" class="d-flex flex-column gap-2">
+              <div class="d-flex gap-2">
+                <label class="form-group flex-1">
+                  <div class="text-small color-fg-muted">Batch ID</div>
+                  <input id="batch_batchId" class="form-control input-block" value="BATCH-2026-0001" />
+                </label>
+                <label class="form-group flex-1">
+                  <div class="text-small color-fg-muted">Lot</div>
+                  <input id="batch_lot" class="form-control input-block" value="LOT-ALPHA" />
+                </label>
+              </div>
+              <div class="d-flex gap-2">
+                <label class="form-group flex-1">
+                  <div class="text-small color-fg-muted">Expiry (ISO date)</div>
+                  <input id="batch_expiry" class="form-control input-block" type="date" />
+                </label>
+                <label class="form-group flex-1">
+                  <div class="text-small color-fg-muted">Certificate Hash</div>
+                  <input id="batch_certHash" class="form-control input-block" value="sha256:demo-cert-hash" />
+                </label>
+              </div>
+              <button class="btn btn-primary" type="submit">Register + Sign Batch</button>
+            </form>
+
+            <div class="d-flex flex-justify-between flex-items-center mt-3">
+              <h4 class="f6 mb-0">Signed Batch JSON</h4>
+              <div class="d-flex gap-2">
+                <button id="copyBatchBtn" class="btn btn-sm">Copy</button>
+                <button id="batchTamperBtn" class="btn btn-sm btn-danger">Tamper</button>
+                <button id="batchVerifyBtn" class="btn btn-sm">Verify</button>
+              </div>
+            </div>
+            <textarea id="batch_out" class="form-control input-block gz-json mt-2" placeholder="Create a batch to populate…"></textarea>
+            <textarea id="batch_verify_out" class="form-control input-block gz-json mt-2" placeholder="Verification result…"></textarea>
+          </div>
+
+          <div id="role_pharmacy" hidden>
+            <h3 class="f5 mt-3">Pharmacy: Dispense Gate (Rx + Batch)</h3>
+            <form id="dispenseForm" class="d-flex flex-column gap-2">
+              <div class="d-flex flex-justify-between flex-items-center">
+                <div class="text-small color-fg-muted">Prescription JSON</div>
+                <button id="useRxBtn" class="btn btn-sm" type="button">Use last Rx</button>
+              </div>
+              <textarea id="dispense_rx" class="form-control input-block gz-json" placeholder="Paste signed prescription JSON…"></textarea>
+              <div class="d-flex flex-justify-between flex-items-center">
+                <div class="text-small color-fg-muted">Batch JSON</div>
+                <button id="useBatchBtn" class="btn btn-sm" type="button">Use last batch</button>
+              </div>
+              <textarea id="dispense_batch" class="form-control input-block gz-json" placeholder="Paste signed batch JSON…"></textarea>
+              <button class="btn btn-primary" type="submit">Dispense</button>
+            </form>
+            <textarea id="dispense_out" class="form-control input-block gz-json mt-2" placeholder="Dispense result…"></textarea>
+          </div>
+
+          <div id="role_admin" hidden>
+            <h3 class="f5 mt-3">Admin/Compliance: Audit Log</h3>
+            <button id="auditLoadBtn" class="btn btn-primary btn-sm">Load latest 200 entries</button>
+            <textarea id="audit_out" class="form-control input-block gz-json mt-2" placeholder="Audit entries…"></textarea>
+          </div>
+
+          <div id="role_patient" hidden>
+            <h3 class="f5 mt-3">Patient</h3>
+            <p class="color-fg-muted text-small">
+              This MVP focuses on identity + Rx integrity + batch provenance + audits. Vitals/device binding is available via API.
+            </p>
+          </div>
+        </section>
+      </div>
+
+      <footer class="mt-4 color-fg-muted text-small">
+        Tip: run <span class="gz-mono">npm run seed</span> then <span class="gz-mono">npm run dev</span>.
+      </footer>
+    </main>
+
+    <script src="app.js" type="module"></script>
+    <script>
+      // Set a sensible default expiry date in the manufacturer form.
+      const el = document.getElementById("batch_expiry");
+      if (el && !el.value) {
+        const d = new Date();
+        d.setFullYear(d.getFullYear() + 1);
+        el.value = d.toISOString().slice(0, 10);
+      }
+    </script>
+  </body>
+</html>
