@@ -636,6 +636,7 @@ async function buildApp() {
 
   // If the backend is hosted separately from the frontend, redirect browser navigations
   // to the configured public URL (e.g. Firebase Hosting). Keep API routes unaffected.
+  // In local dev, redirect to the Vite frontend (http://localhost:3001) so port 3000 behaves as "API only".
   const apiPrefixes = [
     "/health",
     "/auth",
@@ -669,10 +670,13 @@ async function buildApp() {
 
     const current = normalizeOrigin(`${req.protocol}://${req.get("host")}`);
     const pub = normalizeOrigin(PUBLIC_BASE_URL);
-    if (!pub || !current || pub === current) return next();
+    const devFrontend = normalizeOrigin((process.env.DEV_FRONTEND_URL || "http://localhost:3001").trim());
+
+    const targetBase = pub || (!isProdEnv ? devFrontend : "");
+    if (!targetBase || !current || targetBase === current) return next();
 
     const original = String(req.originalUrl || "/");
-    const target = `${pub}${original.startsWith("/") ? original : `/${original}`}`;
+    const target = `${targetBase}${original.startsWith("/") ? original : `/${original}`}`;
     return res.redirect(302, target);
   });
 
