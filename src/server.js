@@ -100,6 +100,11 @@ function getClientIp(req) {
   return req.ip || req.connection?.remoteAddress || "unknown";
 }
 
+function normalizeOrigin(value) {
+  if (!isNonEmptyString(value)) return "";
+  return String(value).trim().replace(/\/+$/, "");
+}
+
 function buildTrustScore({
   newDevice,
   ipReuseCount,
@@ -344,6 +349,8 @@ async function buildApp() {
   const app = express();
   app.disable("x-powered-by");
 
+  const allowedOrigins = CORS_ORIGIN.split(",").map(normalizeOrigin).filter(Boolean);
+
   app.use(
     helmet({
       contentSecurityPolicy: {
@@ -370,9 +377,8 @@ async function buildApp() {
         // Allow same-origin / non-browser clients
         if (!origin) return cb(null, true);
 
-        const allowed = CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
-        if (allowed.length === 0) return cb(null, false);
-        if (allowed.includes(origin)) return cb(null, true);
+        if (allowedOrigins.length === 0) return cb(null, false);
+        if (allowedOrigins.includes(normalizeOrigin(origin))) return cb(null, true);
         return cb(null, false);
       },
       optionsSuccessStatus: 204,
@@ -380,7 +386,18 @@ async function buildApp() {
   );
 
   // Ensure CORS preflights are handled for all routes
-  app.options("*", cors());
+  app.options(
+    "*",
+    cors({
+      origin: (origin, cb) => {
+        if (!origin) return cb(null, true);
+        if (allowedOrigins.length === 0) return cb(null, false);
+        if (allowedOrigins.includes(normalizeOrigin(origin))) return cb(null, true);
+        return cb(null, false);
+      },
+      optionsSuccessStatus: 204,
+    })
+  );
 
   app.use(express.json({ limit: "1mb", type: ["application/json", "application/*+json"] }));
   app.use(mongoSanitize({ replaceWith: "_" }));
