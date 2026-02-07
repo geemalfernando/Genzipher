@@ -257,6 +257,41 @@ export default function AdminDashboard() {
     }
   }
 
+  const investigateAlert = async (alert) => {
+    const actor = alert?.actor || {}
+    const userId = actor.userId
+    const username = actor.username
+    const identifier = actor.identifier
+    const role = actor.role
+    const actionLike = typeof alert?.type === 'string' && /^(auth|anomaly|patient|dispense|vitals|clinic|biometric)\./.test(alert.type) ? alert.type : ''
+
+    const params = new URLSearchParams()
+    if (userId) params.set('userId', userId)
+    else if (username) params.set('username', username)
+    else if (identifier) params.set('username', identifier)
+    if (actionLike) params.set('action', actionLike)
+
+    if (!params.toString()) return toast('No actor/action to investigate for this alert', 'warning')
+
+    try {
+      setActiveSection('dashboard')
+      setShowUserAuditJson(false)
+      setUserActivity({
+        user: username ? `${username}${role ? ` (${role})` : ''}` : (identifier || userId || ''),
+        actionFilter: actionLike || '',
+      })
+      setLoading(true)
+      const data = await api(`/audit/logs?${params.toString()}`)
+      setAuditLogs(data.entries || [])
+      setAuditLogsJson(data)
+      toast(`Loaded ${data.count || 0} audit entries`, 'success')
+    } catch (err) {
+      toast(err.message || 'Failed to load audit logs', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const handleUnlockPasswordReset = async (userId) => {
     if (!userId) return
     if (!confirm(`Unlock password reset for ${userId}?`)) return
@@ -749,23 +784,32 @@ export default function AdminDashboard() {
 
               {analytics && (
                 <>
-                  <div className="section-grid" style={{ marginBottom: '2rem' }}>
-                    <div className="healthcare-card">
-                      <h3 style={{ marginBottom: '0.5rem' }}>Totals</h3>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.95rem' }}>
-                        <div><strong>Events</strong>: {analytics.totals?.events ?? 0}</div>
-                        <div><strong>Anomalies</strong>: {analytics.totals?.anomalies ?? 0}</div>
-                        <div><strong>Login failed</strong>: {analytics.totals?.loginFailed ?? 0}</div>
-                        <div><strong>Login success</strong>: {analytics.totals?.loginSuccess ?? 0}</div>
-                        <div><strong>Password reset</strong>: {analytics.totals?.passwordResetRequested ?? 0}</div>
-                        <div><strong>Reset locked</strong>: {analytics.totals?.passwordResetLocked ?? 0}</div>
-                        <div><strong>New-device step-up</strong>: {analytics.totals?.newDeviceStepUpIssued ?? 0}</div>
-                        <div><strong>Dispense blocked</strong>: {analytics.totals?.dispenseBlocked ?? 0}</div>
-                      </div>
-                      <p style={{ marginTop: '0.75rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
-                        Window: last {analytics.windowHours}h • Buckets: {analytics.bucketMinutes}m
-                      </p>
-                    </div>
+	                  <div className="section-grid" style={{ marginBottom: '2rem' }}>
+	                    <div className="healthcare-card">
+	                      <h3 style={{ marginBottom: '0.5rem' }}>Totals</h3>
+	                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.95rem' }}>
+	                        <div><strong>Events</strong>: {analytics.totals?.events ?? 0}</div>
+	                        <div><strong>Anomalies</strong>: {analytics.totals?.anomalies ?? 0}</div>
+	                        <div><strong>Login failed</strong>: {analytics.totals?.loginFailed ?? 0}</div>
+	                        <div><strong>Login success</strong>: {analytics.totals?.loginSuccess ?? 0}</div>
+	                        <div><strong>Login blocked</strong>: {analytics.totals?.loginBlocked ?? 0}</div>
+	                        <div><strong>OTP issued</strong>: {analytics.totals?.otpIssued ?? 0}</div>
+	                        <div><strong>OTP verified</strong>: {analytics.totals?.otpVerified ?? 0}</div>
+	                        <div><strong>OTP failures</strong>: {analytics.totals?.otpVerifyFailed ?? 0}</div>
+	                        <div><strong>Reset requested</strong>: {analytics.totals?.passwordResetRequested ?? 0}</div>
+	                        <div><strong>Reset completed</strong>: {analytics.totals?.passwordResetCompleted ?? 0}</div>
+	                        <div><strong>Reset locked</strong>: {analytics.totals?.passwordResetLocked ?? 0}</div>
+	                        <div><strong>Step-up issued</strong>: {analytics.totals?.newDeviceStepUpIssued ?? 0}</div>
+	                        <div><strong>Step-up verified</strong>: {analytics.totals?.newDeviceStepUpVerified ?? 0}</div>
+	                        <div><strong>Device bind failed</strong>: {analytics.totals?.deviceBindFailed ?? 0}</div>
+	                        <div><strong>Vitals rejected</strong>: {analytics.totals?.vitalsUploadRejected ?? 0}</div>
+	                        <div><strong>Break-glass reads</strong>: {analytics.totals?.vitalsReadBreakGlass ?? 0}</div>
+	                        <div><strong>Dispense blocked</strong>: {analytics.totals?.dispenseBlocked ?? 0}</div>
+	                      </div>
+	                      <p style={{ marginTop: '0.75rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+	                        Window: last {analytics.windowHours}h • Buckets: {analytics.bucketMinutes}m
+	                      </p>
+	                    </div>
 
                     <div className="healthcare-card">
                       <h3 style={{ marginBottom: '0.5rem' }}>Event trend</h3>
@@ -775,19 +819,139 @@ export default function AdminDashboard() {
                       </p>
                     </div>
 
-                    <div className="healthcare-card">
-                      <h3 style={{ marginBottom: '0.5rem' }}>Login failures</h3>
-                      {renderSparkBars((analytics.series || []).map((b) => b.loginFailed), { color: 'var(--healthcare-danger, #e55353)' })}
-                      <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
-                        Bars: auth.login_failed per bucket
-                      </p>
-                    </div>
-                  </div>
+	                    <div className="healthcare-card">
+	                      <h3 style={{ marginBottom: '0.5rem' }}>Login failures</h3>
+	                      {renderSparkBars((analytics.series || []).map((b) => b.loginFailed), { color: 'var(--healthcare-danger, #e55353)' })}
+	                      <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+	                        Bars: auth.login_failed per bucket
+	                      </p>
+	                    </div>
+	                  </div>
 
-                  <div className="healthcare-card" style={{ marginBottom: '2rem' }}>
-                    <h3 style={{ marginBottom: '1rem' }}>Top actions</h3>
-                    {(analytics.topActions || []).length === 0 ? (
-                      <p className="empty-state">No data</p>
+	                  <div className="section-grid" style={{ marginBottom: '2rem' }}>
+	                    <div className="healthcare-card">
+	                      <h3 style={{ marginBottom: '0.5rem' }}>Anomalies</h3>
+	                      {renderSparkBars((analytics.series || []).map((b) => b.anomalies), { color: 'var(--healthcare-warning, #f5a623)' })}
+	                      <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+	                        Bars: anomaly.* per bucket
+	                      </p>
+	                    </div>
+
+	                    <div className="healthcare-card">
+	                      <h3 style={{ marginBottom: '0.5rem' }}>OTP failures</h3>
+	                      {renderSparkBars((analytics.series || []).map((b) => b.otpVerifyFailed), { color: 'var(--healthcare-warning, #f5a623)' })}
+	                      <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+	                        Bars: auth.otp_verify_failed per bucket
+	                      </p>
+	                    </div>
+
+	                    <div className="healthcare-card">
+	                      <h3 style={{ marginBottom: '0.5rem' }}>Password reset lockouts</h3>
+	                      {renderSparkBars((analytics.series || []).map((b) => b.passwordResetLocked), { color: 'var(--healthcare-danger, #e55353)' })}
+	                      <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+	                        Bars: auth.password_reset_locked per bucket
+	                      </p>
+	                    </div>
+
+	                    <div className="healthcare-card">
+	                      <h3 style={{ marginBottom: '0.5rem' }}>Dispense blocked</h3>
+	                      {renderSparkBars((analytics.series || []).map((b) => b.dispenseBlocked), { color: 'var(--healthcare-danger, #e55353)' })}
+	                      <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+	                        Bars: dispense.blocked per bucket
+	                      </p>
+	                    </div>
+
+	                    <div className="healthcare-card">
+	                      <h3 style={{ marginBottom: '0.5rem' }}>Device bind failures</h3>
+	                      {renderSparkBars((analytics.series || []).map((b) => b.deviceBindFailed), { color: 'var(--healthcare-warning, #f5a623)' })}
+	                      <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+	                        Bars: patient.device_bind_failed per bucket
+	                      </p>
+	                    </div>
+
+	                    <div className="healthcare-card">
+	                      <h3 style={{ marginBottom: '0.5rem' }}>Break-glass vitals reads</h3>
+	                      {renderSparkBars((analytics.series || []).map((b) => b.vitalsReadBreakGlass), { color: 'var(--healthcare-danger, #e55353)' })}
+	                      <p style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+	                        Bars: vitals.read_break_glass per bucket
+	                      </p>
+	                    </div>
+	                  </div>
+
+	                  <div className="healthcare-card" style={{ marginBottom: '2rem' }}>
+	                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '1rem', flexWrap: 'wrap' }}>
+	                      <div>
+	                        <h3 style={{ marginBottom: '0.25rem' }}>Suspicious activity</h3>
+	                        <p style={{ margin: 0, color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+	                          Alerts are derived from anomalies + high-risk patterns (bruteforce, OTP abuse, repeated blocked dispense, break-glass).
+	                        </p>
+	                      </div>
+	                      <div style={{ color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+	                        Total: <strong>{analytics.alertTotals?.total ?? (analytics.alerts || []).length}</strong>{' '}
+	                        {analytics.alertTotals?.bySeverity?.critical ? <>• Critical: <strong>{analytics.alertTotals.bySeverity.critical}</strong>{' '}</> : null}
+	                        {analytics.alertTotals?.bySeverity?.high ? <>• High: <strong>{analytics.alertTotals.bySeverity.high}</strong>{' '}</> : null}
+	                        {analytics.alertTotals?.bySeverity?.medium ? <>• Medium: <strong>{analytics.alertTotals.bySeverity.medium}</strong>{' '}</> : null}
+	                        {analytics.alertTotals?.bySeverity?.low ? <>• Low: <strong>{analytics.alertTotals.bySeverity.low}</strong>{' '}</> : null}
+	                      </div>
+	                    </div>
+
+	                    {(analytics.alerts || []).length === 0 ? (
+	                      <p className="empty-state" style={{ marginTop: '1rem' }}>No alerts in this window</p>
+	                    ) : (
+	                      <div style={{ overflowX: 'auto', marginTop: '1rem' }}>
+	                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+	                          <thead>
+	                            <tr style={{ borderBottom: '2px solid var(--healthcare-border)' }}>
+	                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Time</th>
+	                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Severity</th>
+	                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Title</th>
+	                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Actor</th>
+	                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Type</th>
+	                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Action</th>
+	                            </tr>
+	                          </thead>
+	                          <tbody>
+	                            {(analytics.alerts || []).slice(0, 25).map((a, idx) => {
+	                              const sev = String(a.severity || 'info').toLowerCase()
+	                              const sevColor = sev === 'critical' ? '#b00020' : sev === 'high' ? '#e55353' : sev === 'medium' ? '#f5a623' : sev === 'low' ? '#6c757d' : '#3b82f6'
+	                              const actor = a.actor || {}
+	                              const actorText = actor.username || actor.userId || actor.identifier || '—'
+	                              return (
+	                                <tr key={idx} style={{ borderBottom: '1px solid var(--healthcare-border)' }}>
+	                                  <td style={{ padding: '0.75rem', fontSize: '0.875rem', color: 'var(--healthcare-text-muted)' }}>
+	                                    {a.ts ? new Date(a.ts).toLocaleString() : '—'}
+	                                  </td>
+	                                  <td style={{ padding: '0.75rem', fontSize: '0.875rem' }}>
+	                                    <span style={{ display: 'inline-block', padding: '0.15rem 0.5rem', borderRadius: '999px', background: `${sevColor}22`, color: sevColor, fontWeight: 700, fontSize: '0.75rem' }}>
+	                                      {sev.toUpperCase()}
+	                                    </span>
+	                                  </td>
+	                                  <td style={{ padding: '0.75rem', fontSize: '0.875rem' }}>{a.title || '—'}</td>
+	                                  <td style={{ padding: '0.75rem', fontSize: '0.875rem' }}>
+	                                    <div style={{ fontWeight: 600 }}>{actorText}</div>
+	                                    {actor.role ? <div style={{ fontSize: '0.8125rem', color: 'var(--healthcare-text-muted)' }}>{actor.role}</div> : null}
+	                                  </td>
+	                                  <td style={{ padding: '0.75rem', fontFamily: 'monospace', fontSize: '0.8125rem', color: 'var(--healthcare-text-muted)' }}>
+	                                    {a.type || '—'}
+	                                  </td>
+	                                  <td style={{ padding: '0.75rem' }}>
+	                                    <button className="btn-secondary btn-sm" type="button" onClick={() => investigateAlert(a)} disabled={loading}>
+	                                      Investigate
+	                                    </button>
+	                                  </td>
+	                                </tr>
+	                              )
+	                            })}
+	                          </tbody>
+	                        </table>
+	                      </div>
+	                    )}
+	                  </div>
+
+	                  <div className="healthcare-card" style={{ marginBottom: '2rem' }}>
+	                    <h3 style={{ marginBottom: '1rem' }}>Top actions</h3>
+	                    {(analytics.topActions || []).length === 0 ? (
+	                      <p className="empty-state">No data</p>
                     ) : (
                       <div style={{ overflowX: 'auto' }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse' }}>

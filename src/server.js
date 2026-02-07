@@ -2662,39 +2662,100 @@ async function buildApp() {
       .limit(maxEntries)
       .lean();
 
-    const ACTION_WEIGHTS = {
-      "auth.login_failed": 3,
-      "auth.login_blocked": 6,
-      "auth.otp_verify_failed": 2,
-      "anomaly.otp_failed_multiple": 8,
-      "auth.password_reset_requested": 4,
-      "auth.password_reset_locked": 10,
-      "anomaly.password_reset_rate_limited": 12,
-      "anomaly.password_reset_new_device": 8,
-      "auth.new_device_magic_link_sent": 5,
-      "auth.step_up_new_device_otp_issued": 5,
-      "clinic.code_issued": 3,
-      "dispense.blocked": 8,
-    };
+	    const ACTION_WEIGHTS = {
+	      "auth.login_failed": 3,
+	      "auth.login_blocked": 6,
+	      "auth.otp_verify_failed": 2,
+	      "anomaly.otp_failed_multiple": 8,
+	      "auth.password_reset_requested": 4,
+	      "auth.password_reset_locked": 10,
+	      "anomaly.password_reset_rate_limited": 12,
+	      "anomaly.password_reset_new_device": 8,
+	      "auth.new_device_magic_link_sent": 5,
+	      "auth.step_up_new_device_otp_issued": 5,
+	      "clinic.code_issued": 3,
+	      "patient.device_bind_failed": 4,
+	      "dispense.blocked": 8,
+	      "vitals.upload_rejected": 6,
+	      "vitals.read_break_glass": 12,
+	    };
 
-    const actionCounts = new Map();
-    const identifierRisk = new Map(); // identifier -> { score, counts }
-    const userRisk = new Map(); // userId -> { score, counts, reasons:Set }
+	    const actionCounts = new Map();
+	    const identifierRisk = new Map(); // identifier -> { score, counts }
+	    const userRisk = new Map(); // userId -> { score, counts, reasons:Set }
+	    const alerts = [];
 
-    const initBucket = (key) => ({
-      bucketStart: key,
-      total: 0,
-      loginFailed: 0,
-      loginSuccess: 0,
-      otpVerifyFailed: 0,
-      passwordResetRequested: 0,
-      passwordResetLocked: 0,
-      newDeviceStepUpIssued: 0,
-      clinicCodeIssued: 0,
-      dispenseBlocked: 0,
-      patientPreRegister: 0,
-      anomalies: 0,
-    });
+	    const SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+	    const normalizeSeverity = (s) => (s in SEVERITY_RANK ? s : "info");
+	    const pushAlert = ({ ts, severity, type, title, actor, details }) => {
+	      if (alerts.length >= 600) return;
+	      const a = {
+	        ts: isNonEmptyString(ts) ? String(ts) : nowIso(),
+	        severity: normalizeSeverity(String(severity || "info")),
+	        type: isNonEmptyString(type) ? String(type).slice(0, 64) : "unknown",
+	        title: isNonEmptyString(title) ? String(title).slice(0, 160) : "Suspicious activity",
+	        actor: actor && typeof actor === "object" ? actor : {},
+	        details: details && typeof details === "object" ? details : {},
+	      };
+	      alerts.push(a);
+	    };
+
+	    const maskIp = (ip) => {
+	      if (!isNonEmptyString(ip)) return null;
+	      const s = String(ip).trim();
+	      if (s.includes(".")) {
+	        const p = s.split(".");
+	        if (p.length === 4) return `${p[0]}.${p[1]}.${p[2]}.x`;
+	      }
+	      if (s.includes(":")) {
+	        const p = s.split(":").filter(Boolean);
+	        return `${p.slice(0, 3).join(":")}:…`;
+	      }
+	      return `${s.slice(0, 8)}…`;
+	    };
+
+	    const initBucket = (key) => ({
+	      bucketStart: key,
+	      total: 0,
+	      loginFailed: 0,
+	      loginSuccess: 0,
+	      loginBlocked: 0,
+	      otpIssued: 0,
+	      otpVerified: 0,
+	      otpResent: 0,
+	      otpVerifyFailed: 0,
+	      passwordResetRequested: 0,
+	      passwordResetOtpVerified: 0,
+	      passwordResetCompleted: 0,
+	      passwordResetLocked: 0,
+	      magicLinkSent: 0,
+	      magicLinkConsumed: 0,
+	      newDeviceStepUpIssued: 0,
+	      newDeviceStepUpVerified: 0,
+	      trustedDeviceAdded: 0,
+	      trustedDeviceRemoveRequested: 0,
+	      trustedDeviceRevoked: 0,
+	      clinicCodeIssued: 0,
+	      patientVerificationCodeIssued: 0,
+	      patientVerified: 0,
+	      deviceBindRequested: 0,
+	      deviceBound: 0,
+	      deviceBindFailed: 0,
+	      vitalsRead: 0,
+	      vitalsReadBreakGlass: 0,
+	      vitalsUploaded: 0,
+	      vitalsUploadRejected: 0,
+	      dispenseAllowed: 0,
+	      dispenseBlocked: 0,
+	      patientPreRegister: 0,
+	      appointmentCreated: 0,
+	      rxCreated: 0,
+	      batchRegistered: 0,
+	      biometricEnrolled: 0,
+	      biometricVerified: 0,
+	      pharmacistRegistered: 0,
+	      anomalies: 0,
+	    });
 
     const fromMs = Date.parse(fromIso);
     const toMs = Date.parse(toIso);
@@ -2708,77 +2769,265 @@ async function buildApp() {
       }
     }
 
-    const addUserRisk = ({ userId, action, entry, extraWeight = 0, reason = null }) => {
-      if (!isNonEmptyString(userId)) return;
-      const key = String(userId);
-      const rec = userRisk.get(key) || { userId: key, score: 0, counts: {}, reasons: new Set() };
-      const base = ACTION_WEIGHTS[action] || (String(action).startsWith("anomaly.") ? 10 : 0);
-      const w = base + (safeNumber(extraWeight) ?? 0);
-      if (w !== 0) rec.score += w;
-      rec.counts[action] = (rec.counts[action] || 0) + 1;
-      if (reason) rec.reasons.add(String(reason).slice(0, 160));
-      const detailReason = entry?.details?.reason;
-      if (isNonEmptyString(detailReason)) rec.reasons.add(String(detailReason).slice(0, 160));
-      userRisk.set(key, rec);
-    };
+	    const addUserRisk = ({ userId, action, entry, extraWeight = 0, reason = null }) => {
+	      if (!isNonEmptyString(userId)) return;
+	      const key = String(userId);
+	      const rec = userRisk.get(key) || { userId: key, score: 0, counts: {}, reasons: new Set(), lastTs: null };
+	      const base = ACTION_WEIGHTS[action] || (String(action).startsWith("anomaly.") ? 10 : 0);
+	      const w = base + (safeNumber(extraWeight) ?? 0);
+	      if (w !== 0) rec.score += w;
+	      rec.counts[action] = (rec.counts[action] || 0) + 1;
+	      if (isNonEmptyString(entry?.ts)) rec.lastTs = String(entry.ts);
+	      if (reason) rec.reasons.add(String(reason).slice(0, 160));
+	      const detailReason = entry?.details?.reason;
+	      if (isNonEmptyString(detailReason)) rec.reasons.add(String(detailReason).slice(0, 160));
+	      userRisk.set(key, rec);
+	    };
 
-    const addIdentifierRisk = ({ identifier, action }) => {
-      if (!isNonEmptyString(identifier)) return;
-      const key = String(identifier).trim();
-      const rec = identifierRisk.get(key) || { identifier: key, score: 0, counts: {} };
-      const base = ACTION_WEIGHTS[action] || (String(action).startsWith("anomaly.") ? 10 : 0);
-      rec.score += base;
-      rec.counts[action] = (rec.counts[action] || 0) + 1;
-      identifierRisk.set(key, rec);
-    };
+	    const addIdentifierRisk = ({ identifier, action }) => {
+	      if (!isNonEmptyString(identifier)) return;
+	      const key = String(identifier).trim();
+	      const rec = identifierRisk.get(key) || { identifier: key, score: 0, counts: {}, lastTs: null };
+	      const base = ACTION_WEIGHTS[action] || (String(action).startsWith("anomaly.") ? 10 : 0);
+	      rec.score += base;
+	      rec.counts[action] = (rec.counts[action] || 0) + 1;
+	      identifierRisk.set(key, rec);
+	    };
 
-    for (const e of entries) {
-      const action = String(e.action || "");
-      actionCounts.set(action, (actionCounts.get(action) || 0) + 1);
+	    const buildAlertActor = (e) => {
+	      const actor = e?.actor || {};
+	      const out = {};
+	      if (isNonEmptyString(actor.userId)) out.userId = String(actor.userId);
+	      if (isNonEmptyString(actor.username)) out.username = String(actor.username);
+	      if (isNonEmptyString(actor.role)) out.role = String(actor.role);
+	      if (isNonEmptyString(actor.identifier)) out.identifier = String(actor.identifier);
+	      return out;
+	    };
+
+	    for (const e of entries) {
+	      const action = String(e.action || "");
+	      actionCounts.set(action, (actionCounts.get(action) || 0) + 1);
 
       const tsMs = Date.parse(String(e.ts || ""));
       const bMs = floorToBucketMs(tsMs, bucketMs);
       const bKey = bMs !== null ? new Date(bMs).toISOString() : null;
       const bucket = bKey ? (seriesMap.get(bKey) || initBucket(bKey)) : null;
-      if (bucket && bKey && !seriesMap.has(bKey)) seriesMap.set(bKey, bucket);
-      if (bucket) bucket.total += 1;
+	      if (bucket && bKey && !seriesMap.has(bKey)) seriesMap.set(bKey, bucket);
+	      if (bucket) bucket.total += 1;
 
-      if (action === "auth.login_failed") {
-        if (bucket) bucket.loginFailed += 1;
-        addIdentifierRisk({ identifier: e.actor?.identifier, action });
-      }
-      if (action === "auth.login_success") {
-        if (bucket) bucket.loginSuccess += 1;
-      }
-      if (action === "auth.otp_verify_failed") {
-        if (bucket) bucket.otpVerifyFailed += 1;
-      }
-      if (action === "auth.password_reset_requested") {
-        if (bucket) bucket.passwordResetRequested += 1;
-      }
-      if (action === "auth.password_reset_locked") {
-        if (bucket) bucket.passwordResetLocked += 1;
-      }
-      if (action === "auth.new_device_magic_link_sent" || action === "auth.step_up_new_device_otp_issued") {
-        if (bucket) bucket.newDeviceStepUpIssued += 1;
-      }
-      if (action === "clinic.code_issued") {
-        if (bucket) bucket.clinicCodeIssued += 1;
-      }
-      if (action === "dispense.blocked") {
-        if (bucket) bucket.dispenseBlocked += 1;
-      }
-      if (action === "patient.pre_register") {
-        if (bucket) bucket.patientPreRegister += 1;
-      }
-      if (action.startsWith("anomaly.")) {
-        if (bucket) bucket.anomalies += 1;
-      }
+	      if (action === "auth.login_failed") {
+	        if (bucket) bucket.loginFailed += 1;
+	        addIdentifierRisk({ identifier: e.actor?.identifier, action });
+	        const ident = isNonEmptyString(e.actor?.identifier) ? String(e.actor.identifier).trim() : null;
+	        if (ident) {
+	          const rec = identifierRisk.get(ident);
+	          if (rec) rec.lastTs = isNonEmptyString(e.ts) ? String(e.ts) : rec.lastTs;
+	        }
+	      }
+	      if (action === "auth.login_success") {
+	        if (bucket) bucket.loginSuccess += 1;
+	      }
+	      if (action === "auth.login_blocked") {
+	        if (bucket) bucket.loginBlocked += 1;
+	      }
+	      if (action === "auth.otp_issued") {
+	        if (bucket) bucket.otpIssued += 1;
+	      }
+	      if (action === "auth.otp_verified") {
+	        if (bucket) bucket.otpVerified += 1;
+	      }
+	      if (action === "auth.otp_resent") {
+	        if (bucket) bucket.otpResent += 1;
+	      }
+	      if (action === "auth.otp_verify_failed") {
+	        if (bucket) bucket.otpVerifyFailed += 1;
+	      }
+	      if (action === "auth.password_reset_requested") {
+	        if (bucket) bucket.passwordResetRequested += 1;
+	      }
+	      if (action === "auth.password_reset_otp_verified") {
+	        if (bucket) bucket.passwordResetOtpVerified += 1;
+	      }
+	      if (action === "auth.password_reset_completed") {
+	        if (bucket) bucket.passwordResetCompleted += 1;
+	      }
+	      if (action === "auth.password_reset_locked") {
+	        if (bucket) bucket.passwordResetLocked += 1;
+	      }
+	      if (action === "auth.new_device_magic_link_sent" || action === "auth.step_up_new_device_otp_issued") {
+	        if (bucket) bucket.newDeviceStepUpIssued += 1;
+	      }
+	      if (action === "auth.new_device_magic_link_sent") {
+	        if (bucket) bucket.magicLinkSent += 1;
+	      }
+	      if (action === "auth.new_device_magic_link_consumed") {
+	        if (bucket) bucket.magicLinkConsumed += 1;
+	        if (bucket) bucket.newDeviceStepUpVerified += 1;
+	      }
+	      if (action === "auth.step_up_new_device_verified") {
+	        if (bucket) bucket.newDeviceStepUpVerified += 1;
+	      }
+	      if (action === "auth.trusted_device_added") {
+	        if (bucket) bucket.trustedDeviceAdded += 1;
+	      }
+	      if (action === "auth.trusted_device_remove_requested") {
+	        if (bucket) bucket.trustedDeviceRemoveRequested += 1;
+	      }
+	      if (action === "auth.trusted_device_revoked") {
+	        if (bucket) bucket.trustedDeviceRevoked += 1;
+	      }
+	      if (action === "clinic.code_issued") {
+	        if (bucket) bucket.clinicCodeIssued += 1;
+	      }
+	      if (action === "patient.verification_code_issued") {
+	        if (bucket) bucket.patientVerificationCodeIssued += 1;
+	      }
+	      if (action === "patient.verified") {
+	        if (bucket) bucket.patientVerified += 1;
+	      }
+	      if (action === "patient.device_bind_requested") {
+	        if (bucket) bucket.deviceBindRequested += 1;
+	      }
+	      if (action === "patient.device_bound") {
+	        if (bucket) bucket.deviceBound += 1;
+	      }
+	      if (action === "patient.device_bind_failed") {
+	        if (bucket) bucket.deviceBindFailed += 1;
+	      }
+	      if (action === "vitals.read") {
+	        if (bucket) bucket.vitalsRead += 1;
+	      }
+	      if (action === "vitals.read_break_glass") {
+	        if (bucket) bucket.vitalsReadBreakGlass += 1;
+	      }
+	      if (action === "vitals.upload") {
+	        if (bucket) bucket.vitalsUploaded += 1;
+	      }
+	      if (action === "vitals.upload_rejected") {
+	        if (bucket) bucket.vitalsUploadRejected += 1;
+	      }
+	      if (action === "dispense.allowed") {
+	        if (bucket) bucket.dispenseAllowed += 1;
+	      }
+	      if (action === "dispense.blocked") {
+	        if (bucket) bucket.dispenseBlocked += 1;
+	      }
+	      if (action === "patient.pre_register") {
+	        if (bucket) bucket.patientPreRegister += 1;
+	      }
+	      if (action === "appointment.created") {
+	        if (bucket) bucket.appointmentCreated += 1;
+	      }
+	      if (action === "rx.create") {
+	        if (bucket) bucket.rxCreated += 1;
+	      }
+	      if (action === "batch.register") {
+	        if (bucket) bucket.batchRegistered += 1;
+	      }
+	      if (action === "biometric.enrolled") {
+	        if (bucket) bucket.biometricEnrolled += 1;
+	      }
+	      if (action === "biometric.verified") {
+	        if (bucket) bucket.biometricVerified += 1;
+	      }
+	      if (action === "pharmacist.registered") {
+	        if (bucket) bucket.pharmacistRegistered += 1;
+	      }
+	      if (action.startsWith("anomaly.")) {
+	        if (bucket) bucket.anomalies += 1;
+	      }
 
-      const actorUserId =
-        (isNonEmptyString(e.actor?.userId) && String(e.actor.userId)) ||
-        (isNonEmptyString(e.actor?.patientId) && String(e.actor.patientId)) ||
-        (isNonEmptyString(e.details?.patientId) && String(e.details.patientId)) ||
+	      if (action.startsWith("anomaly.")) {
+	        const det = e.details || {};
+	        const ip = isNonEmptyString(det.ip) ? maskIp(det.ip) : null;
+	        pushAlert({
+	          ts: e.ts,
+	          severity: action === "anomaly.password_reset_rate_limited" ? "high" : "medium",
+	          type: action,
+	          title: `Anomaly detected: ${action}`,
+	          actor: buildAlertActor(e),
+	          details: {
+	            reason: isNonEmptyString(det.reason) ? String(det.reason).slice(0, 160) : null,
+	            ipReuseCount: safeNumber(det.ipReuseCount),
+	            countLastHour: safeNumber(det.countLastHour),
+	            deviceId: looksLikeDeviceId(det.deviceId) ? String(det.deviceId) : null,
+	            ip,
+	          },
+	        });
+	      }
+
+	      if (action === "auth.password_reset_locked") {
+	        pushAlert({
+	          ts: e.ts,
+	          severity: "high",
+	          type: action,
+	          title: "Password reset locked (OTP attempts exceeded)",
+	          actor: buildAlertActor(e),
+	          details: { otpRequestId: isNonEmptyString(e.details?.otpRequestId) ? String(e.details.otpRequestId) : null },
+	        });
+	      }
+
+	      if (action === "dispense.blocked") {
+	        pushAlert({
+	          ts: e.ts,
+	          severity: "critical",
+	          type: action,
+	          title: "Dispense blocked (integrity/provenance failure)",
+	          actor: buildAlertActor(e),
+	          details: {
+	            recordId: isNonEmptyString(e.details?.recordId) ? String(e.details.recordId) : null,
+	            rxId: isNonEmptyString(e.details?.rxId) ? String(e.details.rxId) : null,
+	            batchId: isNonEmptyString(e.details?.batchId) ? String(e.details.batchId) : null,
+	          },
+	        });
+	      }
+
+	      if (action === "patient.device_bind_failed") {
+	        pushAlert({
+	          ts: e.ts,
+	          severity: "medium",
+	          type: action,
+	          title: "Device binding failed (bad signature)",
+	          actor: buildAlertActor(e),
+	          details: {
+	            deviceId: looksLikeDeviceId(e.details?.deviceId) ? String(e.details.deviceId) : null,
+	            reason: isNonEmptyString(e.details?.reason) ? String(e.details.reason).slice(0, 160) : null,
+	          },
+	        });
+	      }
+
+	      if (action === "vitals.upload_rejected") {
+	        pushAlert({
+	          ts: e.ts,
+	          severity: "high",
+	          type: action,
+	          title: "Vitals upload rejected (bad signature)",
+	          actor: buildAlertActor(e),
+	          details: {
+	            deviceId: looksLikeDeviceId(e.details?.deviceId) ? String(e.details.deviceId) : null,
+	            reason: isNonEmptyString(e.details?.reason) ? String(e.details.reason).slice(0, 160) : null,
+	          },
+	        });
+	      }
+
+	      if (action === "vitals.read_break_glass") {
+	        pushAlert({
+	          ts: e.ts,
+	          severity: "high",
+	          type: action,
+	          title: "Break-glass vitals access",
+	          actor: buildAlertActor(e),
+	          details: {
+	            patientToken: isNonEmptyString(e.details?.patientToken) ? String(e.details.patientToken) : null,
+	            returned: safeNumber(e.details?.returned),
+	          },
+	        });
+	      }
+
+	      const actorUserId =
+	        (isNonEmptyString(e.actor?.userId) && String(e.actor.userId)) ||
+	        (isNonEmptyString(e.actor?.patientId) && String(e.actor.patientId)) ||
+	        (isNonEmptyString(e.details?.patientId) && String(e.details.patientId)) ||
         (isNonEmptyString(e.details?.pharmacistId) && String(e.details.pharmacistId)) ||
         (isNonEmptyString(e.details?.unlockedUserId) && String(e.details.unlockedUserId)) ||
         null;
@@ -2813,13 +3062,78 @@ async function buildApp() {
       .sort((a, b) => b.score - a.score)
       .slice(0, 20);
 
-    const riskyIds = [...identifierRisk.values()]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 20);
+	    const riskyIds = [...identifierRisk.values()]
+	      .sort((a, b) => b.score - a.score)
+	      .slice(0, 20);
 
-    const riskUserIds = riskyUsersRaw.map((r) => r.userId);
-    const users = riskUserIds.length
-      ? await User.find(
+	    // Aggregate alerts (threshold-based)
+	    for (const r of riskyIds) {
+	      const fails = safeNumber(r.counts?.["auth.login_failed"]) ?? 0;
+	      if (fails >= 10) {
+	        pushAlert({
+	          ts: isNonEmptyString(r.lastTs) ? r.lastTs : toIso,
+	          severity: fails >= 20 ? "high" : "medium",
+	          type: "bruteforce.identifier",
+	          title: `Repeated login failures for "${String(r.identifier).slice(0, 64)}"`,
+	          actor: { identifier: r.identifier },
+	          details: { loginFailed: fails, windowHours },
+	        });
+	      }
+	    }
+
+	    for (const u of userRisk.values()) {
+	      const otpFails = safeNumber(u.counts?.["auth.otp_verify_failed"]) ?? 0;
+	      if (otpFails >= 5) {
+	        pushAlert({
+	          ts: isNonEmptyString(u.lastTs) ? u.lastTs : toIso,
+	          severity: otpFails >= 10 ? "high" : "medium",
+	          type: "otp.abuse",
+	          title: "Multiple OTP verification failures",
+	          actor: { userId: u.userId },
+	          details: { otpVerifyFailed: otpFails, windowHours },
+	        });
+	      }
+
+	      const bindFails = safeNumber(u.counts?.["patient.device_bind_failed"]) ?? 0;
+	      if (bindFails >= 3) {
+	        pushAlert({
+	          ts: isNonEmptyString(u.lastTs) ? u.lastTs : toIso,
+	          severity: bindFails >= 6 ? "high" : "medium",
+	          type: "device.bind_failures",
+	          title: "Repeated device binding failures",
+	          actor: { userId: u.userId },
+	          details: { deviceBindFailed: bindFails, windowHours },
+	        });
+	      }
+
+	      const blockedDispense = safeNumber(u.counts?.["dispense.blocked"]) ?? 0;
+	      if (blockedDispense >= 2) {
+	        pushAlert({
+	          ts: isNonEmptyString(u.lastTs) ? u.lastTs : toIso,
+	          severity: blockedDispense >= 5 ? "critical" : "high",
+	          type: "dispense.blocked_repeated",
+	          title: "Repeated blocked dispense attempts",
+	          actor: { userId: u.userId },
+	          details: { dispenseBlocked: blockedDispense, windowHours },
+	        });
+	      }
+
+	      const breakGlass = safeNumber(u.counts?.["vitals.read_break_glass"]) ?? 0;
+	      if (breakGlass >= 1) {
+	        pushAlert({
+	          ts: isNonEmptyString(u.lastTs) ? u.lastTs : toIso,
+	          severity: breakGlass >= 3 ? "critical" : "high",
+	          type: "vitals.break_glass",
+	          title: "Break-glass vitals access observed",
+	          actor: { userId: u.userId },
+	          details: { breakGlassReads: breakGlass, windowHours },
+	        });
+	      }
+	    }
+
+	    const riskUserIds = riskyUsersRaw.map((r) => r.userId);
+	    const users = riskUserIds.length
+	      ? await User.find(
           { id: { $in: riskUserIds } },
           { _id: 0, id: 1, username: 1, role: 1, status: 1, passwordResetLockedAt: 1, passwordResetLockedReason: 1 }
         ).lean()
@@ -2848,35 +3162,108 @@ async function buildApp() {
       .limit(50)
       .lean();
 
-    const totals = series.reduce(
-      (acc, b) => {
-        acc.events += b.total;
-        acc.loginFailed += b.loginFailed;
-        acc.loginSuccess += b.loginSuccess;
-        acc.otpVerifyFailed += b.otpVerifyFailed;
-        acc.passwordResetRequested += b.passwordResetRequested;
-        acc.passwordResetLocked += b.passwordResetLocked;
-        acc.newDeviceStepUpIssued += b.newDeviceStepUpIssued;
-        acc.clinicCodeIssued += b.clinicCodeIssued;
-        acc.dispenseBlocked += b.dispenseBlocked;
-        acc.patientPreRegister += b.patientPreRegister;
-        acc.anomalies += b.anomalies;
-        return acc;
-      },
-      {
-        events: 0,
-        loginFailed: 0,
-        loginSuccess: 0,
-        otpVerifyFailed: 0,
-        passwordResetRequested: 0,
-        passwordResetLocked: 0,
-        newDeviceStepUpIssued: 0,
-        clinicCodeIssued: 0,
-        dispenseBlocked: 0,
-        patientPreRegister: 0,
-        anomalies: 0,
-      }
-    );
+	    const totals = series.reduce(
+	      (acc, b) => {
+	        acc.events += b.total;
+	        acc.loginFailed += b.loginFailed;
+	        acc.loginSuccess += b.loginSuccess;
+	        acc.loginBlocked += b.loginBlocked;
+	        acc.otpIssued += b.otpIssued;
+	        acc.otpVerified += b.otpVerified;
+	        acc.otpResent += b.otpResent;
+	        acc.otpVerifyFailed += b.otpVerifyFailed;
+	        acc.passwordResetRequested += b.passwordResetRequested;
+	        acc.passwordResetOtpVerified += b.passwordResetOtpVerified;
+	        acc.passwordResetCompleted += b.passwordResetCompleted;
+	        acc.passwordResetLocked += b.passwordResetLocked;
+	        acc.magicLinkSent += b.magicLinkSent;
+	        acc.magicLinkConsumed += b.magicLinkConsumed;
+	        acc.newDeviceStepUpIssued += b.newDeviceStepUpIssued;
+	        acc.newDeviceStepUpVerified += b.newDeviceStepUpVerified;
+	        acc.trustedDeviceAdded += b.trustedDeviceAdded;
+	        acc.trustedDeviceRemoveRequested += b.trustedDeviceRemoveRequested;
+	        acc.trustedDeviceRevoked += b.trustedDeviceRevoked;
+	        acc.clinicCodeIssued += b.clinicCodeIssued;
+	        acc.patientVerificationCodeIssued += b.patientVerificationCodeIssued;
+	        acc.patientVerified += b.patientVerified;
+	        acc.deviceBindRequested += b.deviceBindRequested;
+	        acc.deviceBound += b.deviceBound;
+	        acc.deviceBindFailed += b.deviceBindFailed;
+	        acc.vitalsRead += b.vitalsRead;
+	        acc.vitalsReadBreakGlass += b.vitalsReadBreakGlass;
+	        acc.vitalsUploaded += b.vitalsUploaded;
+	        acc.vitalsUploadRejected += b.vitalsUploadRejected;
+	        acc.dispenseAllowed += b.dispenseAllowed;
+	        acc.dispenseBlocked += b.dispenseBlocked;
+	        acc.patientPreRegister += b.patientPreRegister;
+	        acc.appointmentCreated += b.appointmentCreated;
+	        acc.rxCreated += b.rxCreated;
+	        acc.batchRegistered += b.batchRegistered;
+	        acc.biometricEnrolled += b.biometricEnrolled;
+	        acc.biometricVerified += b.biometricVerified;
+	        acc.pharmacistRegistered += b.pharmacistRegistered;
+	        acc.anomalies += b.anomalies;
+	        return acc;
+	      },
+	      {
+	        events: 0,
+	        loginFailed: 0,
+	        loginSuccess: 0,
+	        loginBlocked: 0,
+	        otpIssued: 0,
+	        otpVerified: 0,
+	        otpResent: 0,
+	        otpVerifyFailed: 0,
+	        passwordResetRequested: 0,
+	        passwordResetOtpVerified: 0,
+	        passwordResetCompleted: 0,
+	        passwordResetLocked: 0,
+	        magicLinkSent: 0,
+	        magicLinkConsumed: 0,
+	        newDeviceStepUpIssued: 0,
+	        newDeviceStepUpVerified: 0,
+	        trustedDeviceAdded: 0,
+	        trustedDeviceRemoveRequested: 0,
+	        trustedDeviceRevoked: 0,
+	        clinicCodeIssued: 0,
+	        patientVerificationCodeIssued: 0,
+	        patientVerified: 0,
+	        deviceBindRequested: 0,
+	        deviceBound: 0,
+	        deviceBindFailed: 0,
+	        vitalsRead: 0,
+	        vitalsReadBreakGlass: 0,
+	        vitalsUploaded: 0,
+	        vitalsUploadRejected: 0,
+	        dispenseAllowed: 0,
+	        dispenseBlocked: 0,
+	        patientPreRegister: 0,
+	        appointmentCreated: 0,
+	        rxCreated: 0,
+	        batchRegistered: 0,
+	        biometricEnrolled: 0,
+	        biometricVerified: 0,
+	        pharmacistRegistered: 0,
+	        anomalies: 0,
+	      }
+	    );
+
+	    const alertsOut = alerts
+	      .sort((a, b) => {
+	        const s = (SEVERITY_RANK[b.severity] || 0) - (SEVERITY_RANK[a.severity] || 0);
+	        if (s !== 0) return s;
+	        return String(b.ts).localeCompare(String(a.ts));
+	      })
+	      .slice(0, 50);
+
+	    const alertTotals = alertsOut.reduce(
+	      (acc, a) => {
+	        acc.total += 1;
+	        acc.bySeverity[a.severity] = (acc.bySeverity[a.severity] || 0) + 1;
+	        return acc;
+	      },
+	      { total: 0, bySeverity: {} }
+	    );
 
     await auditAppend({
       actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
@@ -2895,17 +3282,19 @@ async function buildApp() {
       topActions,
       series,
       riskyUsers,
-      riskyIdentifiers: riskyIds,
-      lockedUsers: lockedUsers.map((u) => ({
-        userId: u.id,
-        username: u.username,
-        role: u.role,
-        status: u.status,
-        lockedAt: u.passwordResetLockedAt ? new Date(u.passwordResetLockedAt).toISOString() : null,
-        reason: u.passwordResetLockedReason || null,
-      })),
-    });
-  }));
+	      riskyIdentifiers: riskyIds,
+	      lockedUsers: lockedUsers.map((u) => ({
+	        userId: u.id,
+	        username: u.username,
+	        role: u.role,
+	        status: u.status,
+	        lockedAt: u.passwordResetLockedAt ? new Date(u.passwordResetLockedAt).toISOString() : null,
+	        reason: u.passwordResetLockedReason || null,
+	      })),
+	      alerts: alertsOut,
+	      alertTotals,
+	    });
+	  }));
 
   // --- Helpful demo data endpoints (read-only, authenticated) ---
   app.get("/demo/whoami", requireAuth, asyncRoute(async (req, res) => {
