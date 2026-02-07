@@ -109,7 +109,7 @@ export default function PatientDashboard() {
   const loadWallet = async () => {
     try {
       const data = await api('/patients/wallet')
-      setWallet(data.items || [])
+      setWallet(data.wallet || [])
       setWalletJson(data)
     } catch (err) {
       console.error('Wallet load error:', err)
@@ -529,6 +529,7 @@ export default function PatientDashboard() {
               ) : (
                 <div className="section-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
                   {wallet.map((item) => {
+                    const rx = item?.prescription || item
                     const status = item.status || '—'
                     const statusColor =
                       status === 'VALID'
@@ -539,18 +540,19 @@ export default function PatientDashboard() {
                             ? 'var(--healthcare-danger)'
                             : 'var(--healthcare-border)'
                     return (
-                      <div key={item.rxId || item.id} className="healthcare-card">
+                      <div key={rx.id || item.rxId || item.id} className="healthcare-card">
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'baseline' }}>
-                          <h2 style={{ margin: 0, fontSize: '1.1rem' }}>{item.medicineId || 'Prescription'}</h2>
+                          <h2 style={{ margin: 0, fontSize: '1.1rem' }}>{rx.medicineId || 'Prescription'}</h2>
                           <span className="appointment-status" style={{ borderColor: statusColor, color: statusColor }}>
                             {status}
                           </span>
                         </div>
 
                         <div style={{ marginTop: '0.75rem', fontSize: '0.95rem' }}>
-                          <div><strong>Dosage:</strong> {item.dosage || '—'}</div>
-                          <div><strong>Duration:</strong> {item.durationDays ? `${item.durationDays} days` : '—'}</div>
-                          <div><strong>Expires:</strong> {item.expiry ? new Date(item.expiry).toLocaleString() : '—'}</div>
+                          {item.doctor?.username && <div><strong>Doctor:</strong> {item.doctor.username}</div>}
+                          <div><strong>Dosage:</strong> {rx.dosage || '—'}</div>
+                          <div><strong>Duration:</strong> {rx.durationDays ? `${rx.durationDays} days` : '—'}</div>
+                          <div><strong>Expires:</strong> {rx.expiry ? new Date(rx.expiry).toLocaleString() : '—'}</div>
                           {item.usedAt && <div><strong>Used:</strong> {new Date(item.usedAt).toLocaleString()}</div>}
                           <div style={{ marginTop: '0.5rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
                             Verification: {item.checks?.signatureOk ? 'Verified ✓' : 'Unverified ✗'}
