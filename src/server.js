@@ -22,6 +22,9 @@ import { MagicLinkRequest } from "./db/models/MagicLinkRequest.js";
 import { StaffSession } from "./db/models/StaffSession.js";
 import { Biometric } from "./db/models/Biometric.js";
 import { WebAuthnChallenge } from "./db/models/WebAuthnChallenge.js";
+import { Medicine } from "./db/models/Medicine.js";
+import { Stock } from "./db/models/Stock.js";
+import { QualityVerification } from "./db/models/QualityVerification.js";
 import { Prescription } from "./db/models/Prescription.js";
 import { Batch } from "./db/models/Batch.js";
 import { Dispense } from "./db/models/Dispense.js";
@@ -212,6 +215,9 @@ async function ensureIndexes() {
     StaffSession.init(),
     Biometric.init(),
     WebAuthnChallenge.init(),
+    Medicine.init(),
+    Stock.init(),
+    QualityVerification.init(),
     Prescription.init(),
     Batch.init(),
     Dispense.init(),
@@ -435,6 +441,8 @@ async function buildApp() {
         if (allowedOrigins.includes(normalizeOrigin(origin))) return cb(null, true);
         return cb(null, false);
       },
+      methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
+      allowedHeaders: ["content-type", "authorization", "x-gz-device-id"],
       optionsSuccessStatus: 204,
     })
   );
@@ -449,6 +457,8 @@ async function buildApp() {
         if (allowedOrigins.includes(normalizeOrigin(origin))) return cb(null, true);
         return cb(null, false);
       },
+      methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
+      allowedHeaders: ["content-type", "authorization", "x-gz-device-id"],
       optionsSuccessStatus: 204,
     })
   );
@@ -459,10 +469,40 @@ async function buildApp() {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const publicDir = path.resolve(__dirname, "../public");
+
+  // If the backend is hosted separately from the frontend, redirect browser visits to `/`
+  // to the configured public URL (e.g. Firebase Hosting). Keep API routes unaffected.
+  app.get("/", (req, res, next) => {
+    const accept = req.header("accept") || "";
+    if (!accept.includes("text/html")) return next();
+    const current = normalizeOrigin(`${req.protocol}://${req.get("host")}`);
+    const pub = normalizeOrigin(PUBLIC_BASE_URL);
+    if (pub && current && pub !== current) return res.redirect(302, `${pub}/`);
+    return next();
+  });
+
   app.use("/", express.static(publicDir));
 
   // Friendly aliases / SPA-style paths
   app.get(["/home", "/home/"], (req, res) => res.redirect(302, "/"));
+
+  // Serve pharmacist signup page with route-scoped CSP allowing inline scripts (page contains inline JS).
+  app.get("/pharmacist/signup", (req, res) => {
+    res.setHeader(
+      "Content-Security-Policy",
+      [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline'",
+        "style-src 'self' https://unpkg.com 'unsafe-inline'",
+        "img-src 'self' data:",
+        "connect-src 'self' https://unpkg.com",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "frame-ancestors 'none'",
+      ].join("; ")
+    );
+    return res.sendFile(path.join(publicDir, "pharmacist-signup.html"));
+  });
 
   app.get("/health", asyncRoute(async (req, res) => {
     res.json({ ok: true, ts: nowIso() });
@@ -1226,7 +1266,7 @@ async function buildApp() {
       return res.status(400).json({ error: "bad_request", message: "username + email + password required" });
     }
     if (String(mfaCode || "").trim() !== String(DEMO_MFA_CODE)) {
-      return res.status(401).json({ error: "mfa_required_or_invalid" });
+      return res.status(401).json({ error: "invalid_mfa_code", message: "Invalid MFA code. Please use the correct registration code." });
     }
     const existing = await User.findOne({ $or: [{ username }, { email: String(email).trim().toLowerCase() }] }).lean();
     if (existing) return res.status(409).json({ error: "user_exists" });
@@ -1262,18 +1302,43 @@ async function buildApp() {
 
     await auditAppend({
       actor: { userId: user.id, role: "pharmacy", username: user.username },
-      action: "pharmacist.signup",
-      details: {},
+      action: "pharmacist.registered",
+      details: { pharmacistId: user.id, username: user.username, email: user.email },
     });
 
-    return res.status(201).json({ ok: true, token, role: "pharmacy", userId: user.id });
+    return res.status(201).json({
+      ok: true,
+      pharmacistId: user.id,
+      username: user.username,
+      email: user.email,
+      token,
+      message: "Pharmacist account created successfully. You are now logged in.",
+      next: "enroll_biometric",
+      biometricEnrollmentRequired: true,
+    });
   }));
 
   // --- Biometric (WebAuthn MVP) ---
   app.get("/biometric/status", requireAuth, asyncRoute(async (req, res) => {
-    const count = await Biometric.countDocuments({ userId: req.auth.sub, isActive: true });
-    const user = await User.findOne({ id: req.auth.sub }, { _id: 0, biometricEnrolled: 1 }).lean();
-    res.json({ ok: true, enrolled: Boolean(user?.biometricEnrolled), credentialCount: count });
+    const user = await User.findOne(
+      { id: req.auth.sub },
+      { _id: 0, biometricEnrolled: 1, biometricEnrolledAt: 1 }
+    ).lean();
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+    const biometrics = await Biometric.find({ userId: req.auth.sub, isActive: true })
+      .sort({ enrolledAt: -1 })
+      .limit(20)
+      .lean();
+    res.json({
+      enrolled: Boolean(user.biometricEnrolled),
+      enrolledAt: user.biometricEnrolledAt ? new Date(user.biometricEnrolledAt).toISOString() : null,
+      biometrics: biometrics.map((b) => ({
+        id: b.id,
+        deviceName: b.deviceName || null,
+        enrolledAt: b.enrolledAt ? new Date(b.enrolledAt).toISOString() : null,
+        lastUsedAt: b.lastUsedAt ? new Date(b.lastUsedAt).toISOString() : null,
+      })),
+    });
   }));
 
   app.get("/pharmacy/biometric-status", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
@@ -1281,16 +1346,14 @@ async function buildApp() {
     if (!did) return res.status(400).json({ error: "missing_device_id" });
     const session = await getActiveStaffSession({ userId: req.auth.sub, deviceId: did });
     res.json({
-      ok: true,
-      deviceId: did,
       biometricVerified: Boolean(session?.biometricVerified),
-      biometricVerifiedAt: session?.biometricVerifiedAt || null,
+      biometricVerifiedAt: session?.biometricVerifiedAt ? new Date(session.biometricVerifiedAt).toISOString() : null,
+      deviceId: did,
+      sessionId: session?.id || null,
     });
   }));
 
   app.post("/biometric/enroll/start", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
-    const did = getRequestDeviceId(req);
-    if (!did) return res.status(400).json({ error: "missing_device_id" });
     const rpId = new URL(PUBLIC_BASE_URL).hostname;
     const challenge = crypto.randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
@@ -1301,62 +1364,72 @@ async function buildApp() {
       challenge,
       expiresAt,
     });
-    const existing = await Biometric.find({ userId: req.auth.sub, isActive: true }, { _id: 0, credentialIdB64u: 1 }).lean();
+
     res.json({
-      ok: true,
-      publicKey: {
-        challenge,
-        rp: { name: "GenZipher", id: rpId },
-        user: {
-          id: Buffer.from(req.auth.sub).toString("base64url"),
-          name: req.auth.username,
-          displayName: req.auth.username,
-        },
-        pubKeyCredParams: [
-          { type: "public-key", alg: -7 },
-          { type: "public-key", alg: -257 },
-        ],
-        timeout: 60000,
-        attestation: "none",
-        authenticatorSelection: {
-          authenticatorAttachment: "platform",
-          userVerification: "required",
-        },
-        excludeCredentials: existing.map((e) => ({ type: "public-key", id: e.credentialIdB64u })),
+      challenge,
+      rp: { id: rpId, name: "Genzhiper Pharmacy System" },
+      user: {
+        id: Buffer.from(req.auth.sub).toString("base64url"),
+        name: req.auth.username,
+        displayName: req.auth.username,
       },
-      expiresAt: expiresAt.toISOString(),
+      pubKeyCredParams: [
+        { type: "public-key", alg: -7 },
+        { type: "public-key", alg: -257 },
+      ],
+      authenticatorSelection: {
+        authenticatorAttachment: "platform",
+        userVerification: "required",
+      },
+      timeout: 60000,
+      attestation: "direct",
     });
   }));
 
   app.post("/biometric/enroll/complete", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
-    const { credential, deviceName } = req.body || {};
-    const cred = credential || req.body;
-    const credId = isNonEmptyString(cred?.id) ? String(cred.id).trim() : "";
-    if (!isNonEmptyString(credId)) return res.status(400).json({ error: "bad_request", message: "credential.id required" });
+    const { credential, challenge, deviceName } = req.body || {};
+    if (!credential || !isNonEmptyString(challenge)) {
+      return res.status(400).json({ error: "bad_request", message: "credential and challenge required" });
+    }
 
     const latest = await WebAuthnChallenge.findOne({ userId: req.auth.sub, purpose: "ENROLL", expiresAt: { $gt: new Date() } })
       .sort({ expiresAt: -1 })
       .lean();
     if (!latest) return res.status(400).json({ error: "challenge_missing" });
+    if (String(challenge) !== String(latest.challenge)) return res.status(401).json({ error: "challenge_mismatch" });
 
-    // MVP check: ensure client used the issued challenge (no cryptographic verification here).
-    const clientChallenge = cred?.response?.clientDataJSONChallenge || cred?.challenge || null;
-    if (clientChallenge && String(clientChallenge) !== String(latest.challenge)) {
-      return res.status(401).json({ error: "challenge_mismatch" });
-    }
+    const rawIdArr = Array.isArray(credential.rawId) ? credential.rawId : [];
+    const credIdB64u = rawIdArr.length ? Buffer.from(rawIdArr).toString("base64url") : null;
+    if (!isNonEmptyString(credIdB64u)) return res.status(400).json({ error: "bad_request", message: "credential.rawId required" });
+
+    const existing = await Biometric.findOne({ credentialIdB64u: credIdB64u }).lean();
+    if (existing) return res.status(409).json({ error: "credential_exists", message: "This biometric credential is already enrolled" });
+
+    const attObj = Array.isArray(credential?.response?.attestationObject) ? credential.response.attestationObject : [];
+    const cdj = Array.isArray(credential?.response?.clientDataJSON) ? credential.response.clientDataJSON : [];
+    const publicKeyJson = JSON.stringify({
+      id: credential.id || credIdB64u,
+      rawId: rawIdArr,
+      type: credential.type || "public-key",
+      response: {
+        attestationObject: Buffer.from(attObj).toString("base64url"),
+        clientDataJSON: Buffer.from(cdj).toString("base64url"),
+      },
+    });
 
     await Biometric.create({
       id: randomId("bio"),
       userId: req.auth.sub,
       role: "pharmacy",
-      credentialIdB64u: credId,
-      publicKeyJson: JSON.stringify(cred),
+      credentialIdB64u: credIdB64u,
+      publicKeyJson,
       counter: 0,
-      deviceName: isNonEmptyString(deviceName) ? String(deviceName).trim().slice(0, 64) : null,
+      deviceName: isNonEmptyString(deviceName) ? String(deviceName).trim().slice(0, 64) : "Biometric Device",
       enrolledAt: new Date(),
       lastUsedAt: null,
       isActive: true,
     });
+
     await Promise.all([
       User.updateOne({ id: req.auth.sub }, { $set: { biometricEnrolled: true, biometricEnrolledAt: new Date() } }),
       WebAuthnChallenge.deleteOne({ id: latest.id }),
@@ -1365,15 +1438,14 @@ async function buildApp() {
     await auditAppend({
       actor: { userId: req.auth.sub, role: "pharmacy", username: req.auth.username },
       action: "biometric.enrolled",
-      details: { credentialId: credId },
+      details: { credentialId: credIdB64u },
     });
 
-    res.status(201).json({ ok: true, enrolled: true });
+    res.status(201).json({ ok: true });
   }));
 
   app.post("/biometric/verify/start", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
-    const did = getRequestDeviceId(req);
-    if (!did) return res.status(400).json({ error: "missing_device_id" });
+    const rpId = new URL(PUBLIC_BASE_URL).hostname;
     const creds = await Biometric.find({ userId: req.auth.sub, isActive: true }, { _id: 0, credentialIdB64u: 1 }).lean();
     if (!creds.length) return res.status(404).json({ error: "no_biometrics_enrolled" });
 
@@ -1388,31 +1460,33 @@ async function buildApp() {
     });
 
     res.json({
-      ok: true,
-      publicKey: {
-        challenge,
-        timeout: 60000,
-        userVerification: "required",
-        allowCredentials: creds.map((c) => ({ type: "public-key", id: c.credentialIdB64u })),
-      },
-      expiresAt: expiresAt.toISOString(),
+      challenge,
+      allowCredentials: creds.map((c) => ({ type: "public-key", id: c.credentialIdB64u })),
+      timeout: 60000,
+      rpId,
+      userVerification: "required",
     });
   }));
 
   app.post("/biometric/verify/complete", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
     const did = getRequestDeviceId(req);
     if (!did) return res.status(400).json({ error: "missing_device_id" });
-    const { credential } = req.body || {};
-    const cred = credential || req.body;
-    const credId = isNonEmptyString(cred?.id) ? String(cred.id).trim() : "";
-    if (!isNonEmptyString(credId)) return res.status(400).json({ error: "bad_request", message: "credential.id required" });
+    const { credential, challenge } = req.body || {};
+    if (!credential || !isNonEmptyString(challenge)) {
+      return res.status(400).json({ error: "bad_request", message: "credential and challenge required" });
+    }
 
     const latest = await WebAuthnChallenge.findOne({ userId: req.auth.sub, purpose: "VERIFY", expiresAt: { $gt: new Date() } })
       .sort({ expiresAt: -1 })
       .lean();
     if (!latest) return res.status(400).json({ error: "challenge_missing" });
+    if (String(challenge) !== String(latest.challenge)) return res.status(401).json({ error: "challenge_mismatch" });
 
-    const enrolled = await Biometric.findOne({ userId: req.auth.sub, credentialIdB64u: credId, isActive: true }).lean();
+    const rawIdArr = Array.isArray(credential.rawId) ? credential.rawId : [];
+    const credIdB64u = rawIdArr.length ? Buffer.from(rawIdArr).toString("base64url") : null;
+    if (!isNonEmptyString(credIdB64u)) return res.status(400).json({ error: "bad_request", message: "credential.rawId required" });
+
+    const enrolled = await Biometric.findOne({ userId: req.auth.sub, credentialIdB64u: credIdB64u, isActive: true }).lean();
     if (!enrolled) return res.status(403).json({ error: "credential_not_allowed" });
 
     const now = new Date();
@@ -1430,12 +1504,7 @@ async function buildApp() {
             ipAddress: String(getClientIp(req)).slice(0, 128),
             userAgent: isNonEmptyString(req.header("user-agent")) ? String(req.header("user-agent")).slice(0, 512) : null,
           },
-          $set: {
-            lastSeenAt: now,
-            biometricVerified: true,
-            biometricVerifiedAt: now,
-            isActive: true,
-          },
+          $set: { lastSeenAt: now, biometricVerified: true, biometricVerifiedAt: now, isActive: true },
         },
         { upsert: true }
       ),
@@ -1445,10 +1514,10 @@ async function buildApp() {
     await auditAppend({
       actor: { userId: req.auth.sub, role: "pharmacy", username: req.auth.username },
       action: "biometric.verified",
-      details: { credentialId: credId, deviceId: did },
+      details: { credentialId: credIdB64u, deviceId: did },
     });
 
-    res.json({ ok: true, biometricVerified: true });
+    res.json({ biometricVerified: true, message: "Biometric verification successful" });
   }));
 
   app.get("/patients/me/profile", requireAuth, requireRole(["patient"]), asyncRoute(async (req, res) => {
@@ -2199,6 +2268,315 @@ async function buildApp() {
     // Minimal exposure for demo UI
     const users = await User.find({}, { _id: 0, id: 1, username: 1, role: 1, status: 1 }).lean();
     res.json({ users });
+  }));
+
+  // --- Pharmacy/Pharmacist Endpoints (dashboard) ---
+  function requirePharmacyWithBiometric() {
+    return [requireAuth, requireRole(["pharmacy"]), requirePharmacyBiometric];
+  }
+
+  app.get("/pharmacy/dashboard", ...requirePharmacyWithBiometric(), asyncRoute(async (req, res) => {
+    const [medicinesCount, stockCount, lowStockCount, expiredCount, pendingVerifications] = await Promise.all([
+      Medicine.countDocuments({ status: "active" }),
+      Stock.countDocuments({ status: { $in: ["available", "low_stock", "out_of_stock", "quarantined", "expired"] } }),
+      Stock.countDocuments({ status: "low_stock" }),
+      Stock.countDocuments({ status: "expired" }),
+      QualityVerification.countDocuments({ overallStatus: "pending" }),
+    ]);
+
+    return res.json({
+      statistics: {
+        totalMedicines: medicinesCount,
+        totalStockItems: stockCount,
+        lowStockItems: lowStockCount,
+        expiredItems: expiredCount,
+        pendingVerifications,
+      },
+    });
+  }));
+
+  // Medicine management
+  app.post("/pharmacy/medicines", ...requirePharmacyWithBiometric(), asyncRoute(async (req, res) => {
+    const {
+      name,
+      genericName,
+      manufacturer,
+      category,
+      dosageForms,
+      strengths,
+      description,
+      storageConditions,
+      expiryPeriod,
+      requiresPrescription,
+    } = req.body || {};
+
+    if (!isNonEmptyString(name) || !isNonEmptyString(manufacturer) || !isNonEmptyString(category)) {
+      return res.status(400).json({ error: "bad_request", message: "name/manufacturer/category required" });
+    }
+
+    const medicine = {
+      id: randomId("med"),
+      name: name.trim(),
+      genericName: isNonEmptyString(genericName) ? genericName.trim() : null,
+      manufacturer: manufacturer.trim(),
+      category: category.trim(),
+      dosageForms: Array.isArray(dosageForms) ? dosageForms.filter(isNonEmptyString).map((s) => String(s).trim()) : [],
+      strengths: Array.isArray(strengths) ? strengths.filter(isNonEmptyString).map((s) => String(s).trim()) : [],
+      description: isNonEmptyString(description) ? description.trim() : null,
+      storageConditions: isNonEmptyString(storageConditions) ? storageConditions.trim() : null,
+      expiryPeriod: expiryPeriod !== undefined && expiryPeriod !== null ? Number(expiryPeriod) : null,
+      requiresPrescription: requiresPrescription !== undefined ? Boolean(requiresPrescription) : true,
+      status: "active",
+      createdBy: req.auth.sub,
+      createdAt: nowIso(),
+    };
+
+    await Medicine.create(medicine);
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "medicine.created",
+      details: { medicineId: medicine.id, name: medicine.name },
+    });
+
+    return res.status(201).json(medicine);
+  }));
+
+  app.get("/pharmacy/medicines", ...requirePharmacyWithBiometric(), asyncRoute(async (req, res) => {
+    const { search, category, status, limit = 100 } = req.query || {};
+    const query = {};
+
+    if (isNonEmptyString(search)) {
+      query.$or = [
+        { name: { $regex: String(search), $options: "i" } },
+        { genericName: { $regex: String(search), $options: "i" } },
+        { manufacturer: { $regex: String(search), $options: "i" } },
+      ];
+    }
+    if (isNonEmptyString(category)) query.category = String(category);
+    if (isNonEmptyString(status)) query.status = String(status);
+
+    const medicines = await Medicine.find(query).sort({ createdAt: -1 }).limit(Number(limit)).lean();
+    return res.json({ count: medicines.length, medicines });
+  }));
+
+  app.put("/pharmacy/medicines/:medicineId", ...requirePharmacyWithBiometric(), asyncRoute(async (req, res) => {
+    const { medicineId } = req.params;
+    const medicine = await Medicine.findOne({ id: medicineId }).lean();
+    if (!medicine) return res.status(404).json({ error: "medicine_not_found" });
+
+    const {
+      name,
+      genericName,
+      manufacturer,
+      category,
+      dosageForms,
+      strengths,
+      description,
+      storageConditions,
+      expiryPeriod,
+      requiresPrescription,
+      status,
+    } = req.body || {};
+
+    const updateData = {};
+    if (name !== undefined) updateData.name = String(name).trim();
+    if (genericName !== undefined) updateData.genericName = isNonEmptyString(genericName) ? String(genericName).trim() : null;
+    if (manufacturer !== undefined) updateData.manufacturer = String(manufacturer).trim();
+    if (category !== undefined) updateData.category = String(category).trim();
+    if (dosageForms !== undefined) updateData.dosageForms = Array.isArray(dosageForms) ? dosageForms.filter(isNonEmptyString).map((s) => String(s).trim()) : [];
+    if (strengths !== undefined) updateData.strengths = Array.isArray(strengths) ? strengths.filter(isNonEmptyString).map((s) => String(s).trim()) : [];
+    if (description !== undefined) updateData.description = isNonEmptyString(description) ? String(description).trim() : null;
+    if (storageConditions !== undefined) updateData.storageConditions = isNonEmptyString(storageConditions) ? String(storageConditions).trim() : null;
+    if (expiryPeriod !== undefined) updateData.expiryPeriod = expiryPeriod !== null ? Number(expiryPeriod) : null;
+    if (requiresPrescription !== undefined) updateData.requiresPrescription = Boolean(requiresPrescription);
+    if (status !== undefined) updateData.status = String(status).trim();
+
+    await Medicine.updateOne({ id: medicineId }, { $set: updateData });
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "medicine.updated",
+      details: { medicineId, updates: Object.keys(updateData) },
+    });
+
+    const updated = await Medicine.findOne({ id: medicineId }).lean();
+    return res.json(updated);
+  }));
+
+  // Stock management
+  app.post("/pharmacy/stock", ...requirePharmacyWithBiometric(), asyncRoute(async (req, res) => {
+    const {
+      medicineId,
+      quantity,
+      unit,
+      expiryDate,
+      batchId,
+      location,
+      costPerUnit,
+      sellingPricePerUnit,
+      minStockLevel,
+      notes,
+    } = req.body || {};
+
+    if (!isNonEmptyString(medicineId) || !Number.isFinite(Number(quantity)) || !isNonEmptyString(expiryDate)) {
+      return res.status(400).json({ error: "bad_request", message: "medicineId/quantity/expiryDate required" });
+    }
+
+    const medicine = await Medicine.findOne({ id: medicineId }).lean();
+    if (!medicine) return res.status(404).json({ error: "medicine_not_found" });
+
+    const qty = Number(quantity);
+    const minLvl = Number.isFinite(Number(minStockLevel)) ? Number(minStockLevel) : 10;
+    const status = qty === 0 ? "out_of_stock" : qty < minLvl ? "low_stock" : "available";
+
+    const stock = {
+      id: randomId("stk"),
+      medicineId,
+      quantity: qty,
+      unit: isNonEmptyString(unit) ? String(unit).trim() : "units",
+      expiryDate: String(expiryDate).trim(),
+      batchId: isNonEmptyString(batchId) ? String(batchId).trim() : null,
+      status,
+      location: isNonEmptyString(location) ? String(location).trim() : null,
+      minStockLevel: minLvl,
+      costPerUnit: costPerUnit !== undefined && costPerUnit !== null ? Number(costPerUnit) : null,
+      sellingPricePerUnit: sellingPricePerUnit !== undefined && sellingPricePerUnit !== null ? Number(sellingPricePerUnit) : null,
+      notes: isNonEmptyString(notes) ? String(notes).trim() : null,
+      createdBy: req.auth.sub,
+      createdAt: nowIso(),
+      lastRestockedAt: nowIso(),
+      lastRestockedBy: req.auth.sub,
+    };
+
+    await Stock.create(stock);
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "stock.created",
+      details: { stockId: stock.id, medicineId },
+    });
+
+    return res.status(201).json(stock);
+  }));
+
+  app.get("/pharmacy/stock", ...requirePharmacyWithBiometric(), asyncRoute(async (req, res) => {
+    const { medicineId, status, limit = 100 } = req.query || {};
+    const query = {};
+    if (isNonEmptyString(medicineId)) query.medicineId = String(medicineId);
+    if (isNonEmptyString(status)) query.status = String(status);
+
+    const stock = await Stock.find(query).sort({ createdAt: -1 }).limit(Number(limit)).lean();
+    const medicineIds = [...new Set(stock.map((s) => s.medicineId))];
+    const medicines = await Medicine.find({ id: { $in: medicineIds } }, { _id: 0, id: 1, name: 1 }).lean();
+    const medNameById = new Map(medicines.map((m) => [m.id, m.name]));
+    const enriched = stock.map((s) => ({ ...s, medicineName: medNameById.get(s.medicineId) || null }));
+
+    return res.json({ count: enriched.length, stock: enriched });
+  }));
+
+  app.put("/pharmacy/stock/:stockId", ...requirePharmacyWithBiometric(), asyncRoute(async (req, res) => {
+    const { stockId } = req.params;
+    const stock = await Stock.findOne({ id: stockId }).lean();
+    if (!stock) return res.status(404).json({ error: "stock_not_found" });
+
+    const {
+      quantity,
+      unit,
+      expiryDate,
+      batchId,
+      location,
+      costPerUnit,
+      sellingPricePerUnit,
+      minStockLevel,
+      notes,
+    } = req.body || {};
+
+    const updateData = {};
+    if (quantity !== undefined) updateData.quantity = Number(quantity);
+    if (unit !== undefined) updateData.unit = isNonEmptyString(unit) ? String(unit).trim() : "units";
+    if (expiryDate !== undefined) updateData.expiryDate = String(expiryDate).trim();
+    if (batchId !== undefined) updateData.batchId = isNonEmptyString(batchId) ? String(batchId).trim() : null;
+    if (location !== undefined) updateData.location = isNonEmptyString(location) ? String(location).trim() : null;
+    if (minStockLevel !== undefined) updateData.minStockLevel = Number(minStockLevel);
+    if (costPerUnit !== undefined) updateData.costPerUnit = costPerUnit !== null ? Number(costPerUnit) : null;
+    if (sellingPricePerUnit !== undefined) updateData.sellingPricePerUnit = sellingPricePerUnit !== null ? Number(sellingPricePerUnit) : null;
+    if (notes !== undefined) updateData.notes = isNonEmptyString(notes) ? String(notes).trim() : null;
+
+    const qty = updateData.quantity ?? stock.quantity;
+    const minLvl = updateData.minStockLevel ?? stock.minStockLevel ?? 10;
+    updateData.status = qty === 0 ? "out_of_stock" : qty < minLvl ? "low_stock" : "available";
+    updateData.lastRestockedAt = nowIso();
+    updateData.lastRestockedBy = req.auth.sub;
+
+    await Stock.updateOne({ id: stockId }, { $set: updateData });
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "stock.updated",
+      details: { stockId, updates: Object.keys(updateData) },
+    });
+
+    const updated = await Stock.findOne({ id: stockId }).lean();
+    return res.json(updated);
+  }));
+
+  // Quality verification
+  app.post("/pharmacy/quality-verification", ...requirePharmacyWithBiometric(), asyncRoute(async (req, res) => {
+    const { medicineId, batchId, stockId, standard, checks, notes, testResults } = req.body || {};
+    if (!isNonEmptyString(medicineId) || !isNonEmptyString(standard)) {
+      return res.status(400).json({ error: "bad_request", message: "medicineId/standard required" });
+    }
+
+    const medicine = await Medicine.findOne({ id: medicineId }).lean();
+    if (!medicine) return res.status(404).json({ error: "medicine_not_found" });
+
+    const checkValues = checks ? Object.values(checks) : [];
+    let overallStatus = "pending";
+    if (checkValues.length > 0) {
+      if (checkValues.every((v) => v === "pass")) overallStatus = "approved";
+      else if (checkValues.some((v) => v === "fail")) overallStatus = "rejected";
+    }
+
+    const verification = {
+      id: randomId("qv"),
+      medicineId,
+      batchId: isNonEmptyString(batchId) ? String(batchId).trim() : null,
+      stockId: isNonEmptyString(stockId) ? String(stockId).trim() : null,
+      verifiedBy: req.auth.sub,
+      verificationDate: nowIso(),
+      standard: String(standard).trim(),
+      checks: checks || {},
+      overallStatus,
+      notes: isNonEmptyString(notes) ? String(notes).trim() : null,
+      testResults: testResults || null,
+      createdAt: nowIso(),
+    };
+
+    await QualityVerification.create(verification);
+
+    if (overallStatus === "rejected" && isNonEmptyString(stockId)) {
+      await Stock.updateOne({ id: String(stockId).trim() }, { $set: { status: "quarantined" } });
+    }
+
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "quality.verified",
+      details: { verificationId: verification.id, medicineId, overallStatus, standard: verification.standard },
+    });
+
+    return res.status(201).json(verification);
+  }));
+
+  app.get("/pharmacy/quality-verifications", ...requirePharmacyWithBiometric(), asyncRoute(async (req, res) => {
+    const { medicineId, batchId, overallStatus, limit = 100 } = req.query || {};
+    const query = {};
+    if (isNonEmptyString(medicineId)) query.medicineId = String(medicineId);
+    if (isNonEmptyString(batchId)) query.batchId = String(batchId);
+    if (isNonEmptyString(overallStatus)) query.overallStatus = String(overallStatus);
+
+    const verifications = await QualityVerification.find(query)
+      .sort({ verificationDate: -1 })
+      .limit(Number(limit))
+      .lean();
+
+    return res.json({ count: verifications.length, verifications });
   }));
 
   // SPA fallback: serve the UI for unknown GET routes (e.g. /home/)

@@ -3,14 +3,21 @@ function computeApiBase() {
   const stored = (localStorage.getItem("gz_api_base") || "").trim();
   const isFirebaseHost =
     window.location.hostname.endsWith(".web.app") || window.location.hostname.endsWith(".firebaseapp.com");
-  // Prefer the explicit Vercel Functions base path to avoid relying on Vercel rewrites for non-GET methods (e.g. CORS preflight OPTIONS).
-  const auto = isFirebaseHost ? "https://genzipher.vercel.app/api" : "";
+  const auto = isFirebaseHost ? "https://genzipher.vercel.app" : "";
   const base = explicit || stored || auto || "";
   window.GZ_API_BASE = base;
   return base;
 }
 
 const API_BASE = computeApiBase();
+
+function computeApiOrigin() {
+  try {
+    return API_BASE ? new URL(API_BASE).origin : window.location.origin;
+  } catch {
+    return window.location.origin;
+  }
+}
 
 function $(id) {
   return document.getElementById(id);
@@ -199,138 +206,18 @@ function renderAuditReadable(targetEl, payload) {
   `;
 }
 
-function labelForStatus(status) {
-  const s = String(status || "").toUpperCase();
-  if (s === "ACTIVE" || s === "VERIFIED") return { text: s, cls: "Label--success" };
-  if (s === "PENDING") return { text: s, cls: "Label--attention" };
-  if (s === "QUARANTINED") return { text: s, cls: "Label--danger" };
-  return { text: s || "—", cls: "Label--secondary" };
-}
-
-function renderPatientProfileReadable(payload) {
-  const profile = payload?.profile || {};
-  const user = payload?.user || {};
-  const token = payload?.patientToken || "—";
-
-  const statusInfo = labelForStatus(profile.status);
-  const badge = $("patientStatusBadge");
-  badge.textContent = statusInfo.text;
-  badge.className = `Label ${statusInfo.cls}`;
-
-  const createdFromDeviceId = user.createdFromDeviceId || "—";
-  const lastLoginDeviceId = user.lastLoginDeviceId || "—";
-  const lastLoginAt = user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : "—";
-
-  const top3 = Array.isArray(profile.trustExplainTop3) ? profile.trustExplainTop3 : [];
-  const chips = top3
-    .slice(0, 3)
-    .map((x) => `<span class="Label Label--secondary mr-1 mb-1">${escapeHtml(x)}</span>`)
-    .join("");
-
-  const html = `
-    <div class="d-flex flex-wrap gap-2">
-      <span class="Label ${statusInfo.cls}">Status: ${escapeHtml(statusInfo.text)}</span>
-      <span class="Label Label--accent">DID: <span class="gz-mono">${escapeHtml(profile.did || "—")}</span></span>
-      <span class="Label Label--secondary">Trust score: ${escapeHtml(profile.trustScore ?? "—")}</span>
-      <span class="Label Label--secondary">User: <span class="gz-mono">${escapeHtml(user.username || "—")}</span></span>
-      <span class="Label Label--secondary">Email: <span class="gz-mono">${escapeHtml(user.email || "—")}</span></span>
-    </div>
-    <div class="mt-2 d-flex flex-wrap gap-2">
-      <span class="Label Label--secondary">Created device: <span class="gz-mono">${escapeHtml(createdFromDeviceId)}</span></span>
-      <span class="Label Label--secondary">Last login device: <span class="gz-mono">${escapeHtml(lastLoginDeviceId)}</span></span>
-      <span class="Label Label--secondary">Last login at: ${escapeHtml(lastLoginAt)}</span>
-    </div>
-    <div class="mt-2">
-      <div class="text-small color-fg-muted">Patient token</div>
-      <div class="gz-mono">${escapeHtml(token)}</div>
-    </div>
-    <div class="mt-2">
-      <div class="text-small color-fg-muted">Trust score explainability (top factors)</div>
-      <div class="mt-1">${chips || '<span class="color-fg-muted text-small">—</span>'}</div>
-    </div>
-    <div class="mt-2 d-flex flex-wrap gap-2">
-      <span class="Label Label--secondary">MFA: ${user.mfaEnabled ? "ON" : "OFF"} (${escapeHtml(user.mfaMethod || "NONE")})</span>
-      <span class="Label Label--secondary">Created: ${escapeHtml(profile.createdAt ? new Date(profile.createdAt).toLocaleString() : "—")}</span>
-      <span class="Label Label--secondary">Updated: ${escapeHtml(profile.updatedAt ? new Date(profile.updatedAt).toLocaleString() : "—")}</span>
-    </div>
-  `;
-
-  $("patientProfileReadable").innerHTML = html;
-}
-
-function renderLoginDevicesReadable(payload) {
-  const user = payload?.user || {};
-  const devices = Array.isArray(payload?.devices) ? payload.devices : [];
-  const createdFrom = user.createdFromDeviceId || null;
-  const lastLoginDeviceId = user.lastLoginDeviceId || null;
-
-  const summary = `
-    <div class="d-flex flex-wrap gap-2">
-      <span class="Label Label--secondary">Account created device: <span class="gz-mono">${escapeHtml(createdFrom || "—")}</span></span>
-      <span class="Label Label--secondary">Last used device: <span class="gz-mono">${escapeHtml(lastLoginDeviceId || "—")}</span></span>
-      <span class="Label Label--secondary">Last login at: ${escapeHtml(user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : "—")}</span>
-      <span class="Label Label--secondary">Devices seen: ${devices.length}</span>
-    </div>
-  `;
-
-  const rows = devices
-    .slice(0, 50)
-    .map((d) => {
-      const isCreated = createdFrom && d.deviceId === createdFrom;
-      const isLast = lastLoginDeviceId && d.deviceId === lastLoginDeviceId;
-      const flags = [
-        isLast ? `<span class="Label Label--success mr-1">LAST</span>` : "",
-        isCreated ? `<span class="Label Label--secondary mr-1">CREATED</span>` : "",
-        d.verifiedAt ? `<span class="Label Label--success mr-1">VERIFIED</span>` : `<span class="Label Label--attention mr-1">UNVERIFIED</span>`,
-        d.blockedAt ? `<span class="Label Label--danger mr-1">BLOCKED</span>` : "",
-      ]
-        .filter(Boolean)
-        .join("");
-
-      const ip = d.lastIp || d.firstIp || "—";
-      const ua = d.lastUserAgent ? String(d.lastUserAgent) : "—";
-      const uaShort = ua.length > 60 ? `${ua.slice(0, 60)}…` : ua;
-
-      return `<tr>
-        <td class="text-small">${flags || "—"}</td>
-        <td class="text-small"><span class="gz-mono">${escapeHtml(d.deviceId || "—")}</span></td>
-        <td class="text-small color-fg-muted">${escapeHtml(d.firstSeenAt ? new Date(d.firstSeenAt).toLocaleString() : "—")}</td>
-        <td class="text-small color-fg-muted">${escapeHtml(d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : "—")}</td>
-        <td class="text-small color-fg-muted"><span class="gz-mono">${escapeHtml(ip)}</span></td>
-        <td class="text-small color-fg-muted" title="${escapeHtml(ua)}">${escapeHtml(uaShort)}</td>
-      </tr>`;
-    })
-    .join("");
-
-  $("loginDevicesReadable").innerHTML = `
-    ${summary}
-    <div class="mt-2 overflow-x-auto">
-      <table class="table-list width-full">
-        <thead>
-          <tr>
-            <th class="text-small">Flags</th>
-            <th class="text-small">Device ID</th>
-            <th class="text-small">First seen</th>
-            <th class="text-small">Last seen</th>
-            <th class="text-small">IP</th>
-            <th class="text-small">User-Agent</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows || `<tr><td colspan="6" class="text-small color-fg-muted">No devices recorded yet.</td></tr>`}
-        </tbody>
-      </table>
-    </div>
-  `;
-}
-
 function getToken() {
-  return localStorage.getItem("gz_token");
+  return localStorage.getItem("gz_token") || localStorage.getItem("auth_token");
 }
 
 function setToken(token) {
-  if (!token) localStorage.removeItem("gz_token");
-  else localStorage.setItem("gz_token", token);
+  if (!token) {
+    localStorage.removeItem("gz_token");
+    localStorage.removeItem("auth_token");
+  } else {
+    localStorage.setItem("gz_token", token);
+    localStorage.setItem("auth_token", token);
+  }
   updateAuthUi();
 }
 
@@ -403,12 +290,13 @@ function getPendingOtpState() {
 
 async function api(path, { method = "GET", body } = {}) {
   const token = getToken();
+  const deviceId = getDeviceId();
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: {
       ...(body ? { "content-type": "application/json" } : {}),
-      "x-gz-device-id": getDeviceId(),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(deviceId ? { "x-gz-device-id": deviceId } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -442,11 +330,52 @@ function setAccessTab(tab) {
   tabRegister.classList.toggle("btn-primary", !isLogin);
 }
 
+// Handle role-based routing
+function handleRoleRouting(role) {
+  const currentPath = window.location.pathname;
+  const rolePaths = {
+    doctor: "/doctor",
+    pharmacy: "/pharmacy",
+    patient: "/patient",
+    manufacturer: "/manufacturer",
+    admin: "/admin"
+  };
+  
+  const expectedPath = rolePaths[role] || "/";
+  
+  // If user is on wrong role path, redirect them
+  if (currentPath !== expectedPath && currentPath !== "/" && currentPath !== "/index.html") {
+    // Check if current path is a role path
+    const isRolePath = Object.values(rolePaths).includes(currentPath);
+    if (isRolePath) {
+      // User is on a different role's path, redirect to their role path
+      window.history.replaceState({}, "", expectedPath);
+    }
+  }
+  
+  // Update URL if on root and logged in
+  if ((currentPath === "/" || currentPath === "/index.html" || currentPath === "") && role) {
+    window.history.replaceState({}, "", rolePaths[role] || "/");
+  }
+}
+
 async function updateAuthUi() {
   const token = getToken();
   $("logoutBtn").hidden = !token;
   $("loginBox").hidden = Boolean(token);
   $("appBox").hidden = !token;
+  
+  // Update grid layout when workspace or login is shown
+  const mainGrid = $("mainGrid");
+  if (mainGrid) {
+    if (token) {
+      // Workspace is visible - use single column
+      mainGrid.style.gridTemplateColumns = "1fr";
+    } else {
+      // Login is visible - use single column for full width
+      mainGrid.style.gridTemplateColumns = "1fr";
+    }
+  }
 
   if (!token) {
     $("whoami").textContent = "Not logged in";
@@ -468,6 +397,7 @@ async function updateAuthUi() {
     $("whoami").textContent = `${auth.username} (${auth.role})`;
     $("currentRole").textContent = auth.role;
     showRole(auth.role);
+    handleRoleRouting(auth.role);
 
     const users = await api("/demo/users");
     const patientSelect = $("rx_patientUserId");
@@ -488,19 +418,30 @@ async function updateAuthUi() {
         opt.textContent = `${u.username} (${u.role})`;
         sel.appendChild(opt);
       }
-
-      // Prime admin dashboard lists
-      await onLoadPendingPatients();
     }
 
     if (auth.role === "patient") {
       await refreshPatientProfile();
-      await loadTrustedDevices();
-      await autoBindDevice();
-    }
-
-    if (auth.role === "pharmacy") {
-      await pharmacyLoadBiometricStatus();
+      await loadDoctorsForBooking();
+    } else if (auth.role === "pharmacy") {
+      // Check biometric verification status
+      try {
+        const biometricStatus = await api("/pharmacy/biometric-status");
+        if (!biometricStatus.biometricVerified) {
+          // Show biometric verification page
+          showBiometricVerificationPage();
+          return;
+        }
+      } catch (err) {
+        // If check fails, still try to show biometric page
+        showBiometricVerificationPage();
+        return;
+      }
+      
+      // Biometric verified, load pharmacist dashboard
+      if (typeof showPharmTab === "function") {
+        showPharmTab("dashboard");
+      }
     }
   } catch (err) {
     setToken(null);
@@ -511,9 +452,9 @@ async function updateAuthUi() {
 async function checkHealth() {
   try {
     await api("/health");
-    setStatus(true, `API reachable (${API_BASE || "same-origin"})`);
+    setStatus(true, "API reachable");
   } catch {
-    setStatus(false, `API not reachable (${API_BASE || "same-origin"})`);
+    setStatus(false, "API not reachable (run server)");
   }
 }
 
@@ -534,10 +475,6 @@ async function onLogin(e) {
     const deviceId = getDeviceId();
     const rememberToken = getRememberTokenForIdentifier(identifier) || undefined;
     const out = await api("/auth/login", { method: "POST", body: { identifier, password, mfaCode, deviceId, rememberToken } });
-    if (out.mfaRequired && out.method === "EMAIL_LINK" && out.reason === "NEW_DEVICE") {
-      toast("New device detected. Check your email and click the verification link.", "warning");
-      return;
-    }
     if (out.mfaRequired && out.method === "EMAIL_OTP") {
       setPendingOtpState({
         otpRequestId: out.otpRequestId,
@@ -546,12 +483,11 @@ async function onLogin(e) {
         delivery: out.delivery,
         identifier,
         userId: out.userId,
-        reason: out.reason || null,
       });
       $("otpBox").hidden = false;
       $("otp_expires").textContent = out.expiresAt || "—";
       $("otp_sentTo").textContent = out.sentTo || "—";
-      toast(out.reason === "NEW_DEVICE" ? "New device detected. OTP sent." : "OTP required. Check server logs for code (MVP).", "warning");
+      toast("OTP required. Check server logs for code (MVP).", "warning");
       return;
     }
     setPendingOtpState(null);
@@ -562,135 +498,30 @@ async function onLogin(e) {
   }
 }
 
-function onLogout() {
-  (async () => {
-    try {
-      await api("/auth/logout", { method: "POST", body: {} });
-    } catch {
-      // ignore
+async function onLogout() {
+  try {
+    const token = getToken();
+    if (token) {
+      // Call backend logout endpoint to clear biometric verification
+      try {
+        await api("/auth/logout", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+      } catch (err) {
+        // Even if logout endpoint fails, continue with frontend logout
+        console.warn("[LOGOUT] Backend logout failed:", err);
+      }
     }
+  } catch (err) {
+    console.error("[LOGOUT] Error:", err);
+  } finally {
+    // Always clear frontend state
     setToken(null);
     setPendingOtpState(null);
     toast("Logged out", "success");
-  })();
-}
-
-function b64uToBuf(b64u) {
-  const b64 = String(b64u).replaceAll("-", "+").replaceAll("_", "/");
-  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
-  const bin = atob(b64 + pad);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes.buffer;
-}
-
-function bufToB64u(buf) {
-  const bytes = new Uint8Array(buf);
-  let bin = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  const b64 = btoa(bin);
-  return b64.replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-}
-
-async function pharmacyLoadBiometricStatus() {
-  const box = $("pharmacyBioBox");
-  const out = $("pharmacyBioOut");
-  try {
-    const status = await api("/pharmacy/biometric-status");
-    const enrolled = await api("/biometric/status");
-    out.value = pretty({ status, enrolled });
-
-    const msg = $("pharmacyBioMsg");
-    const enrollBtn = $("pharmacyEnrollBtn");
-    const verifyBtn = $("pharmacyVerifyBtn");
-
-    if (status.biometricVerified) {
-      box.hidden = true;
-      return;
-    }
-
-    box.hidden = false;
-    if (!enrolled.enrolled) {
-      msg.textContent = "No biometric enrolled yet. Enroll once to continue.";
-      enrollBtn.hidden = false;
-      verifyBtn.hidden = true;
-    } else {
-      msg.textContent = "Biometric verification required for this session. Please verify.";
-      enrollBtn.hidden = true;
-      verifyBtn.hidden = false;
-    }
-  } catch (err) {
-    box.hidden = false;
-    out.value = pretty({ ok: false, error: err.message });
-    $("pharmacyBioMsg").textContent = `Biometric status error: ${err.message}`;
-  }
-}
-
-async function pharmacyEnrollBiometric() {
-  try {
-    if (!window.PublicKeyCredential) throw new Error("WebAuthn not supported in this browser");
-    const start = await api("/biometric/enroll/start", { method: "POST", body: {} });
-    const pk = start.publicKey;
-    const options = {
-      publicKey: {
-        ...pk,
-        challenge: b64uToBuf(pk.challenge),
-        user: { ...pk.user, id: b64uToBuf(pk.user.id) },
-        excludeCredentials: (pk.excludeCredentials || []).map((c) => ({ ...c, id: b64uToBuf(c.id) })),
-      },
-    };
-    const cred = await navigator.credentials.create(options);
-    const json = {
-      id: cred.id,
-      rawId: bufToB64u(cred.rawId),
-      type: cred.type,
-      response: {
-        clientDataJSON: bufToB64u(cred.response.clientDataJSON),
-        attestationObject: bufToB64u(cred.response.attestationObject),
-      },
-    };
-    const done = await api("/biometric/enroll/complete", { method: "POST", body: { credential: json } });
-    $("pharmacyBioOut").value = pretty(done);
-    toast("Biometric enrolled", "success");
-    await pharmacyLoadBiometricStatus();
-  } catch (err) {
-    $("pharmacyBioOut").value = pretty({ ok: false, error: err.message });
-    toast(err.message, "error");
-  }
-}
-
-async function pharmacyVerifyBiometric() {
-  try {
-    if (!window.PublicKeyCredential) throw new Error("WebAuthn not supported in this browser");
-    const start = await api("/biometric/verify/start", { method: "POST", body: {} });
-    const pk = start.publicKey;
-    const options = {
-      publicKey: {
-        ...pk,
-        challenge: b64uToBuf(pk.challenge),
-        allowCredentials: (pk.allowCredentials || []).map((c) => ({ ...c, id: b64uToBuf(c.id) })),
-      },
-    };
-    const assertion = await navigator.credentials.get(options);
-    const json = {
-      id: assertion.id,
-      rawId: bufToB64u(assertion.rawId),
-      type: assertion.type,
-      response: {
-        clientDataJSON: bufToB64u(assertion.response.clientDataJSON),
-        authenticatorData: bufToB64u(assertion.response.authenticatorData),
-        signature: bufToB64u(assertion.response.signature),
-        userHandle: assertion.response.userHandle ? bufToB64u(assertion.response.userHandle) : null,
-      },
-    };
-    const done = await api("/biometric/verify/complete", { method: "POST", body: { credential: json } });
-    $("pharmacyBioOut").value = pretty(done);
-    toast("Biometric verified", "success");
-    await pharmacyLoadBiometricStatus();
-  } catch (err) {
-    $("pharmacyBioOut").value = pretty({ ok: false, error: err.message });
-    toast(err.message, "error");
   }
 }
 
@@ -736,7 +567,6 @@ async function onPreRegister(e) {
       username: $("pr_username").value.trim(),
       email: $("pr_email").value.trim() || undefined,
       password: $("pr_password").value,
-      deviceId: getDeviceId(),
     };
     const out = await api("/patients/pre-register", { method: "POST", body });
     $("pr_out").value = pretty(out);
@@ -744,12 +574,7 @@ async function onPreRegister(e) {
       $("vc_patientId").value = out.patientId;
       $("vc_username").value = body.username;
     }
-    if (out.status === "PENDING" && out.verification?.required) {
-      const d = out.verification.delivery || "console";
-      toast(`Pre-registered: PENDING. Verification code sent (${d}).`, "warning");
-    } else {
-      toast(`Pre-registered: ${out.status} (score ${out.trustScore})`, out.status === "PENDING" ? "warning" : "success");
-    }
+    toast(`Pre-registered: ${out.status} (score ${out.trustScore})`, out.status === "PENDING" ? "warning" : "success");
   } catch (err) {
     toast(err.message, "error");
   }
@@ -771,18 +596,186 @@ async function onVerifyClinicCode(e) {
   }
 }
 
+// Temporary medicines database (will be replaced with API later)
+const MEDICINES_DATABASE = [
+  { name: "Amoxicillin", commonDosages: ["250mg", "500mg"], defaultDosage: "500mg", defaultDuration: 7 },
+  { name: "Paracetamol", commonDosages: ["500mg", "1000mg"], defaultDosage: "500mg", defaultDuration: 5 },
+  { name: "Ibuprofen", commonDosages: ["200mg", "400mg"], defaultDosage: "400mg", defaultDuration: 7 },
+  { name: "Aspirin", commonDosages: ["75mg", "100mg", "300mg"], defaultDosage: "100mg", defaultDuration: 30 },
+  { name: "Metformin", commonDosages: ["500mg", "850mg", "1000mg"], defaultDosage: "500mg", defaultDuration: 30 },
+  { name: "Atorvastatin", commonDosages: ["10mg", "20mg", "40mg"], defaultDosage: "20mg", defaultDuration: 30 },
+  { name: "Omeprazole", commonDosages: ["20mg", "40mg"], defaultDosage: "20mg", defaultDuration: 14 },
+  { name: "Amlodipine", commonDosages: ["5mg", "10mg"], defaultDosage: "5mg", defaultDuration: 30 },
+  { name: "Levothyroxine", commonDosages: ["25mcg", "50mcg", "75mcg", "100mcg"], defaultDosage: "50mcg", defaultDuration: 30 },
+  { name: "Metoprolol", commonDosages: ["25mg", "50mg", "100mg"], defaultDosage: "50mg", defaultDuration: 30 },
+  { name: "Losartan", commonDosages: ["25mg", "50mg", "100mg"], defaultDosage: "50mg", defaultDuration: 30 },
+  { name: "Sertraline", commonDosages: ["50mg", "100mg"], defaultDosage: "50mg", defaultDuration: 30 },
+  { name: "Ciprofloxacin", commonDosages: ["250mg", "500mg"], defaultDosage: "500mg", defaultDuration: 7 },
+  { name: "Azithromycin", commonDosages: ["250mg", "500mg"], defaultDosage: "500mg", defaultDuration: 5 },
+  { name: "Cephalexin", commonDosages: ["250mg", "500mg"], defaultDosage: "500mg", defaultDuration: 7 },
+];
+
+// Medicine management for prescriptions
+let medicinesList = [];
+
+function searchMedicines(query) {
+  if (!query || query.trim().length < 2) return [];
+  const searchTerm = query.toLowerCase().trim();
+  return MEDICINES_DATABASE.filter(med => 
+    med.name.toLowerCase().includes(searchTerm)
+  ).slice(0, 8); // Limit to 8 results
+}
+
+function showMedicineSearchResults(results) {
+  const resultsContainer = $("rx_medicineSearchResults");
+  if (results.length === 0) {
+    resultsContainer.style.display = "none";
+    return;
+  }
+  
+  resultsContainer.innerHTML = "";
+  results.forEach(med => {
+    const item = document.createElement("div");
+    item.className = "p-2 border-bottom";
+    item.style.cursor = "pointer";
+    item.innerHTML = `
+      <div class="d-flex flex-justify-between flex-items-center">
+        <div>
+          <strong>${med.name}</strong>
+          <div class="text-small color-fg-muted">Common dosages: ${med.commonDosages.join(", ")}</div>
+        </div>
+        <button type="button" class="btn btn-sm btn-primary" data-medicine='${JSON.stringify(med)}'>Add</button>
+      </div>
+    `;
+    item.addEventListener("click", (e) => {
+      if (e.target.tagName === "BUTTON" || e.target.closest("button")) {
+        const btn = e.target.closest("button");
+        const medicine = JSON.parse(btn.dataset.medicine);
+        addMedicineToTable({
+          medicineName: medicine.name,
+          dosage: medicine.defaultDosage,
+          durationDays: medicine.defaultDuration,
+        });
+        $("rx_medicineSearch").value = "";
+        resultsContainer.style.display = "none";
+      }
+    });
+    item.addEventListener("mouseenter", () => {
+      item.style.backgroundColor = "var(--bgColor-muted)";
+    });
+    item.addEventListener("mouseleave", () => {
+      item.style.backgroundColor = "";
+    });
+    resultsContainer.appendChild(item);
+  });
+  resultsContainer.style.display = "block";
+}
+
+function addMedicineToTable(medicine = { medicineName: "", dosage: "", durationDays: 7 }) {
+  medicinesList.push(medicine);
+  renderMedicinesTable();
+}
+
+function removeMedicineFromTable(index) {
+  medicinesList.splice(index, 1);
+  renderMedicinesTable();
+}
+
+// Expose to global scope for onclick handlers
+window.removeMedicineFromTable = removeMedicineFromTable;
+
+function renderMedicinesTable() {
+  const tbody = $("rx_medicinesTbody");
+  const noMedicines = $("rx_noMedicines");
+  const submitBtn = $("rx_submitBtn");
+  
+  tbody.innerHTML = "";
+  
+  if (medicinesList.length === 0) {
+    noMedicines.style.display = "block";
+    submitBtn.disabled = true;
+    return;
+  }
+  
+  noMedicines.style.display = "none";
+  submitBtn.disabled = false;
+  
+  medicinesList.forEach((med, index) => {
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td>
+        <input type="text" class="form-control form-control-sm" value="${med.medicineName || ""}" 
+               placeholder="Amoxicillin" data-index="${index}" data-field="medicineName" />
+      </td>
+      <td>
+        <input type="text" class="form-control form-control-sm" value="${med.dosage || ""}" 
+               placeholder="500mg" data-index="${index}" data-field="dosage" />
+      </td>
+      <td>
+        <input type="number" class="form-control form-control-sm" value="${med.durationDays || 7}" 
+               placeholder="7" min="1" data-index="${index}" data-field="durationDays" />
+      </td>
+      <td>
+        <button type="button" class="btn btn-sm btn-danger" onclick="removeMedicineFromTable(${index})">Remove</button>
+      </td>
+    `;
+    tbody.appendChild(row);
+  });
+  
+  // Add event listeners for inline editing
+  tbody.querySelectorAll("input").forEach(input => {
+    input.addEventListener("change", (e) => {
+      const index = parseInt(e.target.dataset.index);
+      const field = e.target.dataset.field;
+      if (field === "durationDays") {
+        medicinesList[index][field] = Number(e.target.value) || 7;
+      } else if (field === "medicineName") {
+        medicinesList[index].medicineName = e.target.value.trim();
+      } else {
+        medicinesList[index][field] = e.target.value.trim();
+      }
+    });
+  });
+}
+
 async function onCreateRx(e) {
   e.preventDefault();
   try {
+    const patientUserId = $("rx_patientUserId").value;
+    if (!patientUserId) {
+      toast("Please select a patient", "error");
+      return;
+    }
+    
+    if (medicinesList.length === 0) {
+      toast("Please add at least one medicine", "error");
+      return;
+    }
+    
+    // Validate all medicines
+    const medicines = medicinesList.map((med, idx) => {
+      if (!med.medicineName || !med.dosage || !med.durationDays) {
+        throw new Error(`Medicine ${idx + 1} is incomplete. Please fill all fields.`);
+      }
+      return {
+        medicineName: med.medicineName.trim(),
+        dosage: med.dosage.trim(),
+        durationDays: Number(med.durationDays) || 7,
+      };
+    });
+    
     const body = {
-      patientUserId: $("rx_patientUserId").value,
-      medicineId: $("rx_medicineId").value.trim(),
-      dosage: $("rx_dosage").value.trim(),
-      durationDays: Number($("rx_durationDays").value),
+      patientUserId,
+      medicines, // Send as array
     };
-    const rx = await api("/prescriptions", { method: "POST", body });
-    $("rx_out").value = pretty(rx);
-    toast("Prescription signed", "success");
+    
+    const result = await api("/prescriptions", { method: "POST", body });
+    $("rx_out").value = pretty(result);
+    toast(`Prescription signed with ${medicines.length} medicine(s)`, "success");
+    
+    // Clear medicines list after successful creation
+    medicinesList = [];
+    renderMedicinesTable();
   } catch (err) {
     toast(err.message, "error");
   }
@@ -938,7 +931,6 @@ async function onIssueClinicCode(e) {
     $("cc_delivery").textContent = out.delivery || "—";
     $("cc_sentTo").textContent = out.sentTo || "—";
     toast("Clinic code generated", "success");
-    await onLoadPendingPatients();
   } catch (err) {
     toast(err.message, "error");
   }
@@ -1000,23 +992,8 @@ async function refreshPatientProfile() {
     $("patient_token").textContent = out.patientToken || "—";
     $("patient_did").textContent = out.profile?.did || "—";
     $("patient_mfa_email").value = out.user?.email || "";
-    renderPatientProfileReadable(out);
-    await refreshLoginDevices();
   } catch (err) {
     $("patient_profile_out").value = pretty({ ok: false, error: err.message });
-    $("patientProfileReadable").innerHTML = `<span class="color-fg-muted text-small">${escapeHtml(err.message)}</span>`;
-  }
-}
-
-async function refreshLoginDevices() {
-  try {
-    const out = await api("/auth/login-devices");
-    window.__loginDevicesCache = out;
-    $("loginDevices_out").value = pretty(out);
-    renderLoginDevicesReadable(out);
-  } catch (err) {
-    $("loginDevices_out").value = pretty({ ok: false, error: err.message });
-    $("loginDevicesReadable").innerHTML = `<span class="color-fg-muted text-small">${escapeHtml(err.message)}</span>`;
   }
 }
 
@@ -1125,7 +1102,7 @@ async function loadTrustedDevices() {
   if (!out.devices?.length) {
     const opt = document.createElement("option");
     opt.value = "";
-    opt.textContent = "No trusted devices (created only after Email OTP verify + “Trust this device”)";
+    opt.textContent = "No trusted devices";
     select.appendChild(opt);
     return;
   }
@@ -1177,6 +1154,268 @@ async function onTrustedRemoveConfirm() {
   }
 }
 
+// Show biometric verification page for pharmacy users
+function showBiometricVerificationPage() {
+  // Hide all role panes
+  document.querySelectorAll('[id^="role_"]').forEach(el => el.hidden = true);
+  
+  // Show or create biometric verification pane
+  let bioPane = document.getElementById("biometricVerificationPane");
+  if (!bioPane) {
+    // Create the pane if it doesn't exist
+    const rolePharmacy = document.getElementById("role_pharmacy");
+    if (rolePharmacy) {
+      bioPane = document.createElement("div");
+      bioPane.id = "biometricVerificationPane";
+      bioPane.className = "Box p-3";
+      bioPane.innerHTML = `
+        <h3 class="f5 mb-3">Biometric Verification Required</h3>
+        <p class="color-fg-muted mb-3">Please complete biometric verification to access the pharmacy dashboard.</p>
+        <div id="biometricVerificationStatus" class="mb-3"></div>
+        <div class="d-flex gap-2">
+          <button id="biometricEnrollBtn" class="btn" style="display: none;">Enroll Biometric</button>
+          <button id="biometricVerifyBtn" class="btn btn-primary">Start Biometric Verification</button>
+        </div>
+        <p class="text-small color-fg-muted mt-3">
+          <strong>Note:</strong> This will use your device's fingerprint scanner or face recognition.
+          Make sure your browser has permission to access biometrics.
+        </p>
+      `;
+      rolePharmacy.insertBefore(bioPane, rolePharmacy.firstChild);
+    }
+  }
+  
+  if (bioPane) {
+    bioPane.hidden = false;
+    document.getElementById("role_pharmacy").hidden = false;
+    
+    // Wire up the buttons
+    const verifyBtn = document.getElementById("biometricVerifyBtn");
+    const enrollBtn = document.getElementById("biometricEnrollBtn");
+    
+    if (verifyBtn && !verifyBtn.dataset.wired) {
+      verifyBtn.dataset.wired = "true";
+      verifyBtn.addEventListener("click", handlePharmacyBiometricVerification);
+    }
+    
+    if (enrollBtn && !enrollBtn.dataset.wired) {
+      enrollBtn.dataset.wired = "true";
+      enrollBtn.addEventListener("click", handlePharmacyBiometricEnrollment);
+    }
+    
+    // Check enrollment status
+    checkBiometricStatus();
+  }
+}
+
+// Check biometric enrollment status
+async function checkBiometricStatus() {
+  try {
+    const status = await api("/biometric/status");
+    const enrollBtn = document.getElementById("biometricEnrollBtn");
+    const verifyBtn = document.getElementById("biometricVerifyBtn");
+    const statusEl = document.getElementById("biometricVerificationStatus");
+    
+    if (!status.enrolled || status.biometrics.length === 0) {
+      if (enrollBtn) {
+        enrollBtn.hidden = false;
+        enrollBtn.classList.add("btn-primary");
+      }
+      if (verifyBtn) verifyBtn.disabled = true;
+      if (statusEl) statusEl.textContent = "No biometric enrolled. Please enroll first.";
+    } else {
+      if (enrollBtn) enrollBtn.hidden = true;
+      if (verifyBtn) verifyBtn.disabled = false;
+      if (statusEl) statusEl.textContent = `Biometric enrolled. ${status.biometrics.length} device(s) registered.`;
+    }
+  } catch (err) {
+    // If error, show enroll button
+    const enrollBtn = document.getElementById("biometricEnrollBtn");
+    if (enrollBtn) {
+      enrollBtn.hidden = false;
+      enrollBtn.classList.add("btn-primary");
+    }
+  }
+}
+
+// Handle biometric enrollment (registration) for pharmacy users
+async function handlePharmacyBiometricEnrollment() {
+  const statusEl = document.getElementById("biometricVerificationStatus");
+  const btn = document.getElementById("biometricEnrollBtn");
+  
+  try {
+    btn.disabled = true;
+    statusEl.textContent = "Starting biometric enrollment...";
+    
+    // Check if WebAuthn is supported
+    if (!window.PublicKeyCredential) {
+      throw new Error("WebAuthn is not supported in this browser. Please use a modern browser with biometric support.");
+    }
+
+    // 1) Get enrollment challenge from server
+    statusEl.textContent = "Requesting enrollment challenge...";
+    const enrollmentOptions = await api("/biometric/enroll/start", { method: "POST" });
+
+    // 2) Convert base64url challenge to ArrayBuffer
+    const challengeBuffer = Uint8Array.from(atob(enrollmentOptions.challenge.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+    const userIdBuffer = Uint8Array.from(atob(enrollmentOptions.user.id.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+
+    // 3) Prepare credential creation options
+    const publicKeyCredentialCreationOptions = {
+      challenge: challengeBuffer,
+      rp: enrollmentOptions.rp,
+      user: {
+        id: userIdBuffer,
+        name: enrollmentOptions.user.name,
+        displayName: enrollmentOptions.user.displayName,
+      },
+      pubKeyCredParams: enrollmentOptions.pubKeyCredParams,
+      authenticatorSelection: enrollmentOptions.authenticatorSelection,
+      timeout: enrollmentOptions.timeout,
+      attestation: enrollmentOptions.attestation,
+    };
+
+    // 4) Trigger biometric scanner (this will show browser's biometric popup)
+    statusEl.textContent = "Please scan your fingerprint or face...";
+    const credential = await navigator.credentials.create({
+      publicKey: publicKeyCredentialCreationOptions
+    });
+
+    // 5) Convert credential to sendable format
+    const credentialForServer = {
+      id: credential.id,
+      rawId: Array.from(new Uint8Array(credential.rawId)),
+      response: {
+        attestationObject: Array.from(new Uint8Array(credential.response.attestationObject)),
+        clientDataJSON: Array.from(new Uint8Array(credential.response.clientDataJSON)),
+      },
+      type: credential.type,
+    };
+
+    // 6) Send credential to server
+    statusEl.textContent = "Completing enrollment...";
+    const result = await api("/biometric/enroll/complete", {
+      method: "POST",
+      body: {
+        credential: credentialForServer,
+        challenge: enrollmentOptions.challenge,
+        deviceName: "Primary Device",
+      },
+    });
+
+    if (result.ok) {
+      statusEl.textContent = "✅ Biometric enrolled successfully! You can now use it for verification.";
+      toast("Biometric enrolled successfully!", "success");
+      // After enrollment, automatically verify
+      setTimeout(() => {
+        handlePharmacyBiometricVerification();
+      }, 1000);
+    }
+  } catch (err) {
+    statusEl.textContent = `❌ Error: ${err.message}`;
+    toast(err.message, "error");
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Handle biometric verification for pharmacy users
+async function handlePharmacyBiometricVerification() {
+  const statusEl = document.getElementById("biometricVerificationStatus");
+  const btn = document.getElementById("biometricVerifyBtn");
+  
+  try {
+    if (btn) btn.disabled = true;
+    statusEl.textContent = "Starting biometric verification...";
+    
+    // Check if WebAuthn is supported
+    if (!window.PublicKeyCredential) {
+      throw new Error("WebAuthn is not supported in this browser. Please use a modern browser with biometric support.");
+    }
+
+    // 1) Check if biometric is enrolled
+    const status = await api("/biometric/status");
+    if (!status.enrolled || status.biometrics.length === 0) {
+      statusEl.textContent = "No biometric enrolled. Please enroll first.";
+      // Show enrollment button
+      const enrollBtn = document.getElementById("biometricEnrollBtn");
+      if (enrollBtn) {
+        enrollBtn.hidden = false;
+        enrollBtn.disabled = false;
+      }
+      if (btn) btn.disabled = false;
+      return;
+    }
+
+    // 2) Get verification challenge from server
+    statusEl.textContent = "Requesting verification challenge...";
+    const verificationOptions = await api("/biometric/verify/start", { method: "POST" });
+
+    // 3) Convert base64url challenge to ArrayBuffer
+    const challengeBuffer = Uint8Array.from(atob(verificationOptions.challenge.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+    
+    // 4) Convert allowCredentials
+    const allowCredentials = verificationOptions.allowCredentials.map(cred => ({
+      id: Uint8Array.from(atob(cred.id.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)),
+      type: cred.type,
+    }));
+
+    // 5) Prepare assertion options
+    const publicKeyCredentialRequestOptions = {
+      challenge: challengeBuffer,
+      allowCredentials: allowCredentials,
+      timeout: verificationOptions.timeout,
+      rpId: verificationOptions.rpId,
+      userVerification: verificationOptions.userVerification,
+    };
+
+    // 6) Trigger biometric scanner (this will show browser's biometric popup)
+    statusEl.textContent = "Please scan your fingerprint or face...";
+    const assertion = await navigator.credentials.get({
+      publicKey: publicKeyCredentialRequestOptions
+    });
+
+    // 7) Convert assertion to sendable format
+    const assertionForServer = {
+      id: assertion.id,
+      rawId: Array.from(new Uint8Array(assertion.rawId)),
+      response: {
+        authenticatorData: Array.from(new Uint8Array(assertion.response.authenticatorData)),
+        clientDataJSON: Array.from(new Uint8Array(assertion.response.clientDataJSON)),
+        signature: Array.from(new Uint8Array(assertion.response.signature)),
+        userHandle: assertion.response.userHandle ? Array.from(new Uint8Array(assertion.response.userHandle)) : null,
+      },
+      type: assertion.type,
+    };
+
+    // 8) Send assertion to server
+    statusEl.textContent = "Verifying biometric...";
+    const verify = await api("/biometric/verify/complete", {
+      method: "POST",
+      body: {
+        credential: assertionForServer,
+        challenge: verificationOptions.challenge,
+      },
+    });
+    
+    if (verify.biometricVerified) {
+      statusEl.textContent = "✅ Biometric verification successful! Redirecting to dashboard...";
+      setTimeout(() => {
+        document.getElementById("biometricVerificationPane").hidden = true;
+        if (typeof showPharmTab === "function") {
+          showPharmTab("dashboard");
+        }
+        updateAuthUi();
+      }, 1500);
+    } else {
+      throw new Error("Biometric verification failed");
+    }
+  } catch (err) {
+    statusEl.textContent = `❌ Error: ${err.message}`;
+    toast(err.message, "error");
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function autoBindDevice() {
   const outEl = $("autoBindOut");
   try {
@@ -1207,10 +1446,6 @@ async function autoBindDevice() {
           method: "POST",
           body: { deviceId, publicKeyPem, keyAlg: "ES256" },
         });
-        if (bind.status === "active") {
-          outEl.value = pretty({ ok: true, status: "already_active", deviceId });
-          return;
-        }
         challenge = bind.challenge;
       } catch (err) {
         // If the device already exists for this patient, fetch a fresh challenge and continue.
@@ -1248,6 +1483,34 @@ function wire() {
   $("verifyClinicForm").addEventListener("submit", onVerifyClinicCode);
 
   $("rxForm").addEventListener("submit", onCreateRx);
+  
+  // Medicine search functionality
+  const medicineSearchInput = $("rx_medicineSearch");
+  if (medicineSearchInput) {
+    let searchTimeout;
+    medicineSearchInput.addEventListener("input", (e) => {
+      clearTimeout(searchTimeout);
+      const query = e.target.value;
+      searchTimeout = setTimeout(() => {
+        if (query.trim().length >= 2) {
+          const results = searchMedicines(query);
+          showMedicineSearchResults(results);
+        } else {
+          $("rx_medicineSearchResults").style.display = "none";
+        }
+      }, 300); // Debounce search
+    });
+    
+    // Hide results when clicking outside
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest("#rx_medicineSearch") && !e.target.closest("#rx_medicineSearchResults")) {
+        $("rx_medicineSearchResults").style.display = "none";
+      }
+    });
+    
+    // Initialize medicines table
+    renderMedicinesTable();
+  }
   $("rxVerifyBtn").addEventListener("click", onVerifyRx);
   $("rxTamperBtn").addEventListener("click", onTamperRx);
 
@@ -1256,8 +1519,6 @@ function wire() {
   $("batchTamperBtn").addEventListener("click", onTamperBatch);
 
   $("dispenseForm").addEventListener("submit", onDispense);
-  $("pharmacyEnrollBtn").addEventListener("click", pharmacyEnrollBiometric);
-  $("pharmacyVerifyBtn").addEventListener("click", pharmacyVerifyBiometric);
   $("auditLoadBtn").addEventListener("click", onLoadAudit);
   $("adminLoadUserAuditBtn").addEventListener("click", onLoadUserAudit);
   $("auditToggleJsonBtn").addEventListener("click", () => {
@@ -1297,28 +1558,6 @@ function wire() {
   });
 
   $("patientRefreshBtn").addEventListener("click", refreshPatientProfile);
-  $("loginDevicesRefreshBtn").addEventListener("click", refreshLoginDevices);
-  $("loginDevicesToggleJsonBtn").addEventListener("click", () => {
-    const ta = $("loginDevices_out");
-    const showing = !ta.hidden;
-    ta.hidden = showing;
-    $("loginDevicesToggleJsonBtn").textContent = showing ? "Show JSON" : "Hide JSON";
-  });
-  $("loginDevicesCopyJsonBtn").addEventListener("click", async () => {
-    const text = $("loginDevices_out").value || pretty(window.__loginDevicesCache || {});
-    await navigator.clipboard.writeText(text);
-    toast("Copied login devices JSON", "success");
-  });
-  $("patientProfileToggleJsonBtn").addEventListener("click", () => {
-    const ta = $("patient_profile_out");
-    const showing = !ta.hidden;
-    ta.hidden = showing;
-    $("patientProfileToggleJsonBtn").textContent = showing ? "Show JSON" : "Hide JSON";
-  });
-  $("patientProfileCopyJsonBtn").addEventListener("click", async () => {
-    await navigator.clipboard.writeText($("patient_profile_out").value || "");
-    toast("Copied profile JSON", "success");
-  });
   $("patientMfaForm").addEventListener("submit", onPatientEnableMfa);
   $("mfaDisableRequestBtn").addEventListener("click", onMfaDisableRequest);
   $("mfaDisableConfirmBtn").addEventListener("click", onMfaDisableConfirm);
@@ -1329,6 +1568,39 @@ function wire() {
   $("patientProvisionKeyBtn").addEventListener("click", onPatientProvisionKey);
 
   $("autoBindBtn").addEventListener("click", autoBindDevice);
+  
+  // Appointment booking
+  $("appointmentForm").addEventListener("submit", onCreateAppointment);
+  $("loadAppointmentsBtn").addEventListener("click", onLoadAppointments);
+  
+  // Doctor patient search
+  $("tabRx").addEventListener("click", () => {
+    $("doctorRxPane").hidden = false;
+    $("doctorPatientSearchPane").hidden = true;
+    $("tabRx").classList.add("btn-primary");
+    $("tabPatientSearch").classList.remove("btn-primary");
+  });
+  $("tabPatientSearch").addEventListener("click", () => {
+    $("doctorRxPane").hidden = true;
+    $("doctorPatientSearchPane").hidden = false;
+    $("tabRx").classList.remove("btn-primary");
+    $("tabPatientSearch").classList.add("btn-primary");
+    loadDoctorsForSearch();
+  });
+  
+  let patientSearchTimeout;
+  $("doctor_patientSearch").addEventListener("input", (e) => {
+    clearTimeout(patientSearchTimeout);
+    const query = e.target.value.trim();
+    if (query.length < 2) {
+      $("doctor_patientSearchResults").style.display = "none";
+      return;
+    }
+    patientSearchTimeout = setTimeout(() => onSearchPatients(query), 300);
+  });
+  
+  $("doctor_viewHistoryBtn").addEventListener("click", onViewPatientHistory);
+  $("doctor_viewPrescriptionsBtn").addEventListener("click", onViewPatientPrescriptions);
 
   $("copyRxBtn").addEventListener("click", async () => {
     await navigator.clipboard.writeText($("rx_out").value || "");
@@ -1348,33 +1620,690 @@ function wire() {
   });
 }
 
+// Appointment functions
+let selectedPatientId = null;
+
+async function onCreateAppointment(e) {
+  e.preventDefault();
+  try {
+    const body = {
+      doctorId: $("apt_doctorId").value,
+      appointmentDate: $("apt_date").value,
+      appointmentTime: $("apt_time").value,
+      notes: $("apt_notes").value.trim() || null,
+    };
+    const appointment = await api("/appointments", { method: "POST", body });
+    $("apt_out").innerHTML = `<div class="flash flash-success">Appointment booked successfully!</div><pre class="gz-json mt-2">${pretty(appointment)}</pre>`;
+    $("appointmentForm").reset();
+    await onLoadAppointments();
+    toast("Appointment booked", "success");
+  } catch (err) {
+    $("apt_out").innerHTML = `<div class="flash flash-error">Error: ${err.message}</div>`;
+    toast(err.message, "error");
+  }
+}
+
+async function onLoadAppointments() {
+  try {
+    const data = await api("/appointments");
+    const list = $("appointmentsList");
+    if (data.appointments.length === 0) {
+      list.innerHTML = '<div class="color-fg-muted text-small">No appointments found.</div>';
+      return;
+    }
+    list.innerHTML = data.appointments.map(apt => `
+      <div class="Box p-2 mb-2">
+        <div class="d-flex flex-justify-between flex-items-center">
+          <div>
+            <strong>Doctor ID:</strong> ${apt.doctorId}<br>
+            <strong>Date:</strong> ${apt.appointmentDate} at ${apt.appointmentTime}<br>
+            <strong>Status:</strong> <span class="Label Label--${apt.status === 'completed' ? 'success' : apt.status === 'cancelled' ? 'danger' : 'info'}">${apt.status}</span>
+          </div>
+        </div>
+        ${apt.notes ? `<div class="mt-1 text-small color-fg-muted">Notes: ${apt.notes}</div>` : ''}
+      </div>
+    `).join("");
+  } catch (err) {
+    $("appointmentsList").innerHTML = `<div class="flash flash-error">Error: ${err.message}</div>`;
+    toast(err.message, "error");
+  }
+}
+
+async function loadDoctorsForBooking() {
+  try {
+    const data = await api("/doctors");
+    const select = $("apt_doctorId");
+    if (!select) return; // Element might not exist if not patient role
+    
+    select.innerHTML = '<option value="">Select a doctor...</option>';
+    
+    if (data.doctors && data.doctors.length > 0) {
+      data.doctors.forEach(doc => {
+        const option = document.createElement("option");
+        option.value = doc.id;
+        option.textContent = `${doc.username} (${doc.id})`;
+        select.appendChild(option);
+      });
+    } else {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No doctors available";
+      option.disabled = true;
+      select.appendChild(option);
+    }
+  } catch (err) {
+    toast(err.message, "error");
+    const select = $("apt_doctorId");
+    if (select) {
+      select.innerHTML = '<option value="">Error loading doctors</option>';
+    }
+  }
+}
+
+// Doctor patient search functions
+async function onSearchPatients(query) {
+  try {
+    const data = await api(`/doctors/patients/search?query=${encodeURIComponent(query)}`);
+    const resultsContainer = $("doctor_patientSearchResults");
+    
+    if (data.patients.length === 0) {
+      resultsContainer.style.display = "none";
+      return;
+    }
+    
+    resultsContainer.innerHTML = "";
+    data.patients.forEach(patient => {
+      const item = document.createElement("div");
+      item.className = "p-2 border-bottom";
+      item.style.cursor = "pointer";
+      item.innerHTML = `
+        <div>
+          <strong>${patient.username}</strong>
+          <div class="text-small color-fg-muted">ID: ${patient.id}</div>
+        </div>
+      `;
+      item.addEventListener("click", () => {
+        selectedPatientId = patient.id;
+        $("doctor_patientSearch").value = patient.username;
+        resultsContainer.style.display = "none";
+        showPatientDetails(patient);
+      });
+      item.addEventListener("mouseenter", () => {
+        item.style.backgroundColor = "var(--bgColor-muted)";
+      });
+      item.addEventListener("mouseleave", () => {
+        item.style.backgroundColor = "";
+      });
+      resultsContainer.appendChild(item);
+    });
+    resultsContainer.style.display = "block";
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function showPatientDetails(patient) {
+  const details = $("doctor_patientDetails");
+  const info = $("doctor_patientInfo");
+  info.innerHTML = `
+    <div><strong>Patient:</strong> ${patient.username}</div>
+    <div class="text-small color-fg-muted">ID: ${patient.id}</div>
+  `;
+  details.style.display = "block";
+  $("doctor_patientData").innerHTML = "";
+}
+
+async function onViewPatientHistory() {
+  if (!selectedPatientId) {
+    toast("Please select a patient first", "error");
+    return;
+  }
+  try {
+    const data = await api(`/patients/${selectedPatientId}/history`);
+    const container = $("doctor_patientData");
+    container.innerHTML = `
+      <h5 class="f6 mb-2">Patient History</h5>
+      <div class="Box p-2 mb-2">
+        <strong>Vitals Records:</strong> ${data.vitals.length}
+        <ul class="mt-1">
+          ${data.vitals.map(v => `<li class="text-small">${v.ts} - Device: ${v.deviceId}</li>`).join("")}
+        </ul>
+      </div>
+      <div class="Box p-2">
+        <strong>Appointments:</strong> ${data.appointments.length}
+        <ul class="mt-1">
+          ${data.appointments.map(a => `<li class="text-small">${a.appointmentDate} ${a.appointmentTime} - ${a.status}</li>`).join("")}
+        </ul>
+      </div>
+      <pre class="gz-json mt-2">${pretty(data)}</pre>
+    `;
+    toast("Patient history loaded", "success");
+  } catch (err) {
+    toast(err.message, "error");
+    $("doctor_patientData").innerHTML = `<div class="flash flash-error">Error: ${err.message}</div>`;
+  }
+}
+
+async function onViewPatientPrescriptions() {
+  if (!selectedPatientId) {
+    toast("Please select a patient first", "error");
+    return;
+  }
+  try {
+    const data = await api(`/patients/${selectedPatientId}/prescriptions`);
+    const container = $("doctor_patientData");
+    container.innerHTML = `
+      <h5 class="f6 mb-2">Patient Prescriptions</h5>
+      <div class="Box p-2">
+        <strong>Total Prescriptions:</strong> ${data.prescriptions.length}
+        <div class="mt-2">
+          ${data.prescriptions.map(rx => `
+            <div class="border-bottom pb-2 mb-2">
+              <div><strong>${rx.medicineName}</strong></div>
+              <div class="text-small">Dosage: ${rx.dosage}, Duration: ${rx.durationDays} days</div>
+              <div class="text-small color-fg-muted">Issued: ${rx.issuedAt}, Status: ${rx.status}</div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+      <pre class="gz-json mt-2">${pretty(data)}</pre>
+    `;
+    toast("Patient prescriptions loaded", "success");
+  } catch (err) {
+    toast(err.message, "error");
+    $("doctor_patientData").innerHTML = `<div class="flash flash-error">Error: ${err.message}</div>`;
+  }
+}
+
+async function loadDoctorsForSearch() {
+  // This is just to ensure doctors are available if needed
+  // The search endpoint handles the filtering
+}
+
+// Pharmacist Dashboard Functions
+function showPharmTab(tab) {
+  const tabs = ["dashboard", "medicines", "stock", "quality", "dispense"];
+  tabs.forEach(t => {
+    const pane = $(`pharm${t.charAt(0).toUpperCase() + t.slice(1)}Pane`);
+    const btn = $(`pharmTab${t.charAt(0).toUpperCase() + t.slice(1)}`);
+    if (pane) pane.hidden = t !== tab;
+    if (btn) {
+      btn.classList.toggle("btn-primary", t === tab);
+      btn.classList.toggle("btn-sm", true);
+    }
+  });
+  
+  // Load data when tab is shown
+  if (tab === "dashboard") onLoadPharmDashboard();
+  else if (tab === "medicines") onLoadPharmMedicines();
+  else if (tab === "stock") onLoadPharmStock();
+  else if (tab === "quality") onLoadPharmQuality();
+}
+
+async function onLoadPharmDashboard() {
+  try {
+    const data = await api("/pharmacy/dashboard");
+    const stats = data.statistics;
+    if ($("pharmStatMedicines")) $("pharmStatMedicines").textContent = stats.totalMedicines || 0;
+    if ($("pharmStatStock")) $("pharmStatStock").textContent = stats.totalStockItems || 0;
+    if ($("pharmStatLowStock")) $("pharmStatLowStock").textContent = stats.lowStockItems || 0;
+    if ($("pharmStatExpired")) $("pharmStatExpired").textContent = stats.expiredItems || 0;
+    if ($("pharmStatPending")) $("pharmStatPending").textContent = stats.pendingVerifications || 0;
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+// Medicines Management
+async function onLoadPharmMedicines() {
+  try {
+    const search = $("pharmMedicineSearch")?.value || "";
+    const category = $("pharmMedicineCategory")?.value || "";
+    let url = "/pharmacy/medicines?";
+    if (search) url += `search=${encodeURIComponent(search)}&`;
+    if (category) url += `category=${encodeURIComponent(category)}&`;
+    
+    const data = await api(url);
+    const container = $("pharmMedicinesList");
+    if (!container) return;
+    
+    if (data.medicines.length === 0) {
+      container.innerHTML = '<div class="color-fg-muted text-small">No medicines found.</div>';
+      return;
+    }
+    
+    container.innerHTML = data.medicines.map(med => `
+      <div class="Box p-2 mb-2">
+        <div class="d-flex flex-justify-between flex-items-center">
+          <div>
+            <strong>${med.name}</strong>
+            ${med.genericName ? `<div class="text-small color-fg-muted">${med.genericName}</div>` : ''}
+            <div class="text-small">Manufacturer: ${med.manufacturer} | Category: ${med.category}</div>
+            ${med.strengths.length > 0 ? `<div class="text-small">Strengths: ${med.strengths.join(", ")}</div>` : ''}
+          </div>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm" onclick="editPharmMedicine('${med.id}')">Edit</button>
+            <span class="Label Label--${med.status === 'active' ? 'success' : 'danger'}">${med.status}</span>
+          </div>
+        </div>
+      </div>
+    `).join("");
+  } catch (err) {
+    toast(err.message, "error");
+    if ($("pharmMedicinesList")) $("pharmMedicinesList").innerHTML = `<div class="flash flash-error">Error: ${err.message}</div>`;
+  }
+}
+
+async function onSearchPharmMedicines() {
+  await onLoadPharmMedicines();
+}
+
+function showPharmMedicineModal(medicineId = null) {
+  const modal = $("pharmMedicineModal");
+  const form = $("pharmMedicineForm");
+  if (!modal || !form) return;
+  
+  modal.style.display = "block";
+  if (medicineId) {
+    $("pharmMedicineModalTitle").textContent = "Edit Medicine";
+    // Load medicine data
+    loadPharmMedicineData(medicineId);
+  } else {
+    $("pharmMedicineModalTitle").textContent = "Add Medicine";
+    form.reset();
+    $("pharmMedicineId").value = "";
+  }
+}
+
+function hidePharmMedicineModal() {
+  const modal = $("pharmMedicineModal");
+  if (modal) modal.style.display = "none";
+}
+
+async function loadPharmMedicineData(medicineId) {
+  try {
+    const medicines = await api("/pharmacy/medicines");
+    const med = medicines.medicines.find(m => m.id === medicineId);
+    if (!med) return;
+    
+    $("pharmMedicineId").value = med.id;
+    $("pharmMedicineName").value = med.name || "";
+    $("pharmMedicineGeneric").value = med.genericName || "";
+    $("pharmMedicineManufacturer").value = med.manufacturer || "";
+    $("pharmMedicineCategorySelect").value = med.category || "";
+    $("pharmMedicineDosageForms").value = Array.isArray(med.dosageForms) ? med.dosageForms.join(", ") : "";
+    $("pharmMedicineStrengths").value = Array.isArray(med.strengths) ? med.strengths.join(", ") : "";
+    $("pharmMedicineDescription").value = med.description || "";
+    $("pharmMedicineStorage").value = med.storageConditions || "";
+    $("pharmMedicineExpiryPeriod").value = med.expiryPeriod || "";
+    $("pharmMedicineRequiresRx").checked = med.requiresPrescription !== false;
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function onSavePharmMedicine(e) {
+  e.preventDefault();
+  try {
+    const medicineId = $("pharmMedicineId").value;
+    const body = {
+      name: $("pharmMedicineName").value.trim(),
+      genericName: $("pharmMedicineGeneric").value.trim() || null,
+      manufacturer: $("pharmMedicineManufacturer").value.trim(),
+      category: $("pharmMedicineCategorySelect").value,
+      dosageForms: $("pharmMedicineDosageForms").value.split(",").map(s => s.trim()).filter(s => s),
+      strengths: $("pharmMedicineStrengths").value.split(",").map(s => s.trim()).filter(s => s),
+      description: $("pharmMedicineDescription").value.trim() || null,
+      storageConditions: $("pharmMedicineStorage").value.trim() || null,
+      expiryPeriod: $("pharmMedicineExpiryPeriod").value ? Number($("pharmMedicineExpiryPeriod").value) : null,
+      requiresPrescription: $("pharmMedicineRequiresRx").checked,
+    };
+    
+    if (medicineId) {
+      await api(`/pharmacy/medicines/${medicineId}`, { method: "PUT", body });
+      toast("Medicine updated", "success");
+    } else {
+      await api("/pharmacy/medicines", { method: "POST", body });
+      toast("Medicine added", "success");
+    }
+    
+    hidePharmMedicineModal();
+    await onLoadPharmMedicines();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+// Stock Management
+async function onLoadPharmStock(query = "") {
+  try {
+    let url = "/pharmacy/stock?";
+    if (query) {
+      url += query;
+    } else {
+      const medicineId = $("pharmStockMedicine")?.value || "";
+      const status = $("pharmStockStatus")?.value || "";
+      if (medicineId) url += `medicineId=${encodeURIComponent(medicineId)}&`;
+      if (status) url += `status=${encodeURIComponent(status)}&`;
+    }
+    
+    const data = await api(url);
+    const container = $("pharmStockList");
+    if (!container) return;
+    
+    // Load medicines for dropdown
+    await loadPharmMedicinesForStock();
+    
+    if (data.stock.length === 0) {
+      container.innerHTML = '<div class="color-fg-muted text-small">No stock items found.</div>';
+      return;
+    }
+    
+    container.innerHTML = data.stock.map(s => {
+      const statusColors = {
+        available: "success",
+        low_stock: "attention",
+        out_of_stock: "danger",
+        expired: "danger",
+        quarantined: "warning"
+      };
+      return `
+        <div class="Box p-2 mb-2">
+          <div class="d-flex flex-justify-between flex-items-center">
+            <div>
+              <strong>${s.medicineName || "Unknown"}</strong>
+              <div class="text-small">Quantity: ${s.quantity} ${s.unit} | Expiry: ${s.expiryDate}</div>
+              ${s.location ? `<div class="text-small">Location: ${s.location}</div>` : ''}
+              ${s.batchId ? `<div class="text-small">Batch: ${s.batchId}</div>` : ''}
+            </div>
+            <div class="d-flex gap-2 flex-items-center">
+              <span class="Label Label--${statusColors[s.status] || 'default'}">${s.status}</span>
+              <button class="btn btn-sm" onclick="editPharmStock('${s.id}')">Edit</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join("");
+  } catch (err) {
+    toast(err.message, "error");
+    if ($("pharmStockList")) $("pharmStockList").innerHTML = `<div class="flash flash-error">Error: ${err.message}</div>`;
+  }
+}
+
+async function loadPharmMedicinesForStock() {
+  try {
+    const data = await api("/pharmacy/medicines");
+    const select = $("pharmStockMedicine");
+    const selectModal = $("pharmStockMedicineSelect");
+    
+    if (select) {
+      select.innerHTML = '<option value="">All Medicines</option>';
+      data.medicines.forEach(med => {
+        const opt = document.createElement("option");
+        opt.value = med.id;
+        opt.textContent = med.name;
+        select.appendChild(opt);
+      });
+    }
+    
+    if (selectModal) {
+      selectModal.innerHTML = '<option value="">Select Medicine...</option>';
+      data.medicines.forEach(med => {
+        const opt = document.createElement("option");
+        opt.value = med.id;
+        opt.textContent = med.name;
+        selectModal.appendChild(opt);
+      });
+    }
+  } catch (err) {
+    // Silently fail
+  }
+}
+
+function showPharmStockModal(stockId = null) {
+  const modal = $("pharmStockModal");
+  if (!modal) return;
+  
+  modal.style.display = "block";
+  loadPharmMedicinesForStock();
+  
+  if (stockId) {
+    $("pharmStockModalTitle").textContent = "Edit Stock";
+    loadPharmStockData(stockId);
+  } else {
+    $("pharmStockModalTitle").textContent = "Add Stock";
+    $("pharmStockForm").reset();
+    $("pharmStockId").value = "";
+    $("pharmStockUnit").value = "units";
+    $("pharmStockMinLevel").value = "10";
+  }
+}
+
+function hidePharmStockModal() {
+  const modal = $("pharmStockModal");
+  if (modal) modal.style.display = "none";
+}
+
+async function loadPharmStockData(stockId) {
+  try {
+    const data = await api("/pharmacy/stock");
+    const stock = data.stock.find(s => s.id === stockId);
+    if (!stock) return;
+    
+    $("pharmStockId").value = stock.id;
+    $("pharmStockMedicineSelect").value = stock.medicineId;
+    $("pharmStockQuantity").value = stock.quantity;
+    $("pharmStockUnit").value = stock.unit;
+    $("pharmStockExpiryDate").value = stock.expiryDate;
+    $("pharmStockLocation").value = stock.location || "";
+    $("pharmStockCost").value = stock.costPerUnit || "";
+    $("pharmStockPrice").value = stock.sellingPricePerUnit || "";
+    $("pharmStockMinLevel").value = stock.minStockLevel || 10;
+    $("pharmStockBatchId").value = stock.batchId || "";
+    $("pharmStockNotes").value = stock.notes || "";
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function onSavePharmStock(e) {
+  e.preventDefault();
+  try {
+    const stockId = $("pharmStockId").value;
+    const body = {
+      medicineId: $("pharmStockMedicineSelect").value,
+      quantity: Number($("pharmStockQuantity").value),
+      unit: $("pharmStockUnit").value || "units",
+      expiryDate: $("pharmStockExpiryDate").value,
+      location: $("pharmStockLocation").value.trim() || null,
+      costPerUnit: $("pharmStockCost").value ? Number($("pharmStockCost").value) : null,
+      sellingPricePerUnit: $("pharmStockPrice").value ? Number($("pharmStockPrice").value) : null,
+      minStockLevel: Number($("pharmStockMinLevel").value) || 10,
+      batchId: $("pharmStockBatchId").value.trim() || null,
+      notes: $("pharmStockNotes").value.trim() || null,
+    };
+    
+    if (stockId) {
+      await api(`/pharmacy/stock/${stockId}`, { method: "PUT", body });
+      toast("Stock updated", "success");
+    } else {
+      await api("/pharmacy/stock", { method: "POST", body });
+      toast("Stock added", "success");
+    }
+    
+    hidePharmStockModal();
+    await onLoadPharmStock();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+// Quality Verification
+async function onLoadPharmQuality() {
+  try {
+    const data = await api("/pharmacy/quality-verifications");
+    const container = $("pharmQualityList");
+    if (!container) return;
+    
+    if (data.verifications.length === 0) {
+      container.innerHTML = '<div class="color-fg-muted text-small">No quality verifications found.</div>';
+      return;
+    }
+    
+    container.innerHTML = data.verifications.map(v => {
+      const statusColors = {
+        approved: "success",
+        rejected: "danger",
+        pending: "default",
+        quarantined: "warning"
+      };
+      return `
+        <div class="Box p-2 mb-2">
+          <div class="d-flex flex-justify-between flex-items-center">
+            <div>
+              <strong>Medicine ID: ${v.medicineId}</strong>
+              <div class="text-small">Standard: ${v.standard} | Date: ${v.verificationDate}</div>
+              <div class="text-small">Checks: ${Object.entries(v.checks).filter(([k, val]) => val === "pass").length} passed, ${Object.entries(v.checks).filter(([k, val]) => val === "fail").length} failed</div>
+            </div>
+            <span class="Label Label--${statusColors[v.overallStatus] || 'default'}">${v.overallStatus}</span>
+          </div>
+        </div>
+      `;
+    }).join("");
+  } catch (err) {
+    toast(err.message, "error");
+    if ($("pharmQualityList")) $("pharmQualityList").innerHTML = `<div class="flash flash-error">Error: ${err.message}</div>`;
+  }
+}
+
+function showPharmQualityModal() {
+  const modal = $("pharmQualityModal");
+  if (!modal) return;
+  
+  modal.style.display = "block";
+  loadPharmMedicinesForQuality();
+  $("pharmQualityForm").reset();
+}
+
+function hidePharmQualityModal() {
+  const modal = $("pharmQualityModal");
+  if (modal) modal.style.display = "none";
+}
+
+async function loadPharmMedicinesForQuality() {
+  try {
+    const data = await api("/pharmacy/medicines");
+    const select = $("pharmQualityMedicine");
+    if (!select) return;
+    
+    select.innerHTML = '<option value="">Select Medicine...</option>';
+    data.medicines.forEach(med => {
+      const opt = document.createElement("option");
+      opt.value = med.id;
+      opt.textContent = med.name;
+      select.appendChild(opt);
+    });
+  } catch (err) {
+    // Silently fail
+  }
+}
+
+async function onSavePharmQuality(e) {
+  e.preventDefault();
+  try {
+    const body = {
+      medicineId: $("pharmQualityMedicine").value,
+      batchId: $("pharmQualityBatchId").value.trim() || null,
+      stockId: $("pharmQualityStockId").value.trim() || null,
+      standard: $("pharmQualityStandard").value,
+      checks: {
+        appearance: $("pharmQualityAppearance").value,
+        packaging: $("pharmQualityPackaging").value,
+        labeling: $("pharmQualityLabeling").value,
+        temperature: $("pharmQualityTemperature").value,
+        expiry: $("pharmQualityExpiry").value,
+        batchCertificate: $("pharmQualityBatchCert").value,
+        tamperEvidence: $("pharmQualityTamper").value,
+      },
+      notes: $("pharmQualityNotes").value.trim() || null,
+    };
+    
+    await api("/pharmacy/quality-verification", { method: "POST", body });
+    toast("Quality verification saved", "success");
+    
+    hidePharmQualityModal();
+    await onLoadPharmQuality();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+// Global functions for onclick handlers
+window.editPharmMedicine = (id) => showPharmMedicineModal(id);
+window.editPharmStock = (id) => showPharmStockModal(id);
+
+// Debounce helper
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
+// Check if user should be redirected based on URL
+async function checkUrlRole() {
+  const currentPath = window.location.pathname;
+  const rolePaths = {
+    "/doctor": "doctor",
+    "/pharmacy": "pharmacy",
+    "/patient": "patient",
+    "/manufacturer": "manufacturer",
+    "/admin": "admin"
+  };
+  
+  const expectedRole = rolePaths[currentPath];
+  const token = getToken();
+  
+  if (expectedRole && token) {
+    // User is logged in and on a role-specific path
+    // Verify they have the correct role
+    try {
+      const whoami = await api("/demo/whoami");
+      if (whoami.auth.role !== expectedRole) {
+        // Wrong role, redirect to their role path
+        const rolePaths = {
+          doctor: "/doctor",
+          pharmacy: "/pharmacy",
+          patient: "/patient",
+          manufacturer: "/manufacturer",
+          admin: "/admin"
+        };
+        window.location.href = rolePaths[whoami.auth.role] || "/";
+      }
+    } catch (err) {
+      // Token invalid, will be handled by updateAuthUi
+    }
+  }
+}
+
 async function init() {
   wire();
   setAccessTab("login");
   await checkHealth();
-
-  // Magic-link auto-consume (new device verification)
-  const url = new URL(window.location.href);
-  const magicToken = url.searchParams.get("mlt");
-  if (magicToken) {
-    try {
-      const deviceId = getDeviceId();
-      const out = await api("/auth/magic-link/consume", { method: "POST", body: { token: magicToken, deviceId } });
-      setToken(out.token);
-      toast("Device verified. Logged in.", "success");
-      url.searchParams.delete("mlt");
-      window.history.replaceState({}, "", url.toString());
-    } catch (err) {
-      toast(`Magic link failed: ${err.message}`, "error");
-    }
-  }
-
+  await checkUrlRole();
   await updateAuthUi();
+
+  const pharmLink = document.querySelector('a[href="/pharmacist/signup"]');
+  if (pharmLink) pharmLink.href = `${computeApiOrigin()}/pharmacist/signup`;
 
   // Initialize toggle button labels (in case server-side render differs).
   $("auditToggleJsonBtn").textContent = $("audit_out").hidden ? "Show JSON" : "Hide JSON";
   $("adminUserAuditToggleJsonBtn").textContent = $("adminUserAuditOut").hidden ? "Show JSON" : "Hide JSON";
-  $("patientProfileToggleJsonBtn").textContent = $("patient_profile_out").hidden ? "Show JSON" : "Hide JSON";
 
   const expiryEl = $("batch_expiry");
   if (expiryEl && !expiryEl.value) {

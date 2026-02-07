@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="https://unpkg.com/@primer/css@17.0.1/dist/primer.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
-  <body class="p-3 p-md-4">
+  <body>
     <main class="container-xl">
       <div class="gz-hero p-3 p-md-4 mb-3">
         <div class="d-flex flex-justify-between flex-items-center flex-wrap gap-2">
@@ -34,7 +34,7 @@
 
       <div id="toast" class="flash" hidden></div>
 
-      <div class="gz-grid">
+      <div class="gz-grid" id="mainGrid">
         <section class="Box p-3" id="loginBox">
           <div class="d-flex flex-justify-between flex-items-center">
             <h2 class="f4 mb-0">Access</h2>
@@ -63,11 +63,11 @@
                 <input id="login_mfa" class="form-control input-block" placeholder="123456" />
               </label>
               <button class="btn btn-primary" type="submit">Login</button>
-              <div class="text-small">
-                <a href="/pharmacist-signup.html">Register as Pharmacist</a>
-              </div>
               <div class="color-fg-muted text-small">
                 Try: <span class="gz-mono">doctor1</span>, <span class="gz-mono">mfg1</span>, <span class="gz-mono">pharmacy1</span>, <span class="gz-mono">admin1</span>, <span class="gz-mono">patient1</span>
+              </div>
+              <div class="text-center mt-2">
+                <a href="/pharmacist/signup" class="text-small color-fg-blue">Register as Pharmacist</a>
               </div>
             </form>
 
@@ -154,28 +154,100 @@
           </p>
 
           <div id="role_doctor" hidden>
-            <h3 class="f5 mt-3">Doctor: Sign Prescription</h3>
+            <div class="d-flex flex-justify-between flex-items-center mb-2">
+              <h3 class="f5 mt-3 mb-0">Doctor: Sign Prescription</h3>
+              <div class="BtnGroup">
+                <button id="tabRx" class="BtnGroup-item btn btn-sm btn-primary" type="button">Create Rx</button>
+                <button id="tabPatientSearch" class="BtnGroup-item btn btn-sm" type="button">Search Patients</button>
+              </div>
+            </div>
+            
+            <!-- Patient Search Tab -->
+            <div id="doctorPatientSearchPane" hidden>
+              <div class="Box p-3 mb-3">
+                <label class="form-group">
+                  <div class="text-small color-fg-muted mb-1">Search Patient</div>
+                  <div class="position-relative">
+                    <input 
+                      id="doctor_patientSearch" 
+                      class="form-control input-block" 
+                      type="text" 
+                      placeholder="Search by patient name or ID (min 2 characters)" 
+                      autocomplete="off"
+                    />
+                    <div id="doctor_patientSearchResults" class="Box" style="display: none; max-height: 300px; overflow-y: auto;">
+                      <!-- Search results will appear here -->
+                    </div>
+                  </div>
+                </label>
+              </div>
+              
+              <div id="doctor_patientDetails" class="Box p-3" style="display: none;">
+                <h4 class="f6 mb-2">Patient Details</h4>
+                <div id="doctor_patientInfo" class="mb-3"></div>
+                <div class="d-flex gap-2">
+                  <button id="doctor_viewHistoryBtn" class="btn btn-sm">View History</button>
+                  <button id="doctor_viewPrescriptionsBtn" class="btn btn-sm">View Prescriptions</button>
+                </div>
+                <div id="doctor_patientData" class="mt-3"></div>
+              </div>
+            </div>
+            
+            <!-- Prescription Creation Tab -->
+            <div id="doctorRxPane">
             <form id="rxForm" class="d-flex flex-column gap-2">
               <label class="form-group">
                 <div class="text-small color-fg-muted">Patient</div>
                 <select id="rx_patientUserId" class="form-select input-block"></select>
               </label>
-              <div class="d-flex gap-2">
-                <label class="form-group flex-1">
-                  <div class="text-small color-fg-muted">Medicine ID</div>
-                  <input id="rx_medicineId" class="form-control input-block" value="MED-AMOX-500" />
-                </label>
-                <label class="form-group flex-1">
-                  <div class="text-small color-fg-muted">Dosage</div>
-                  <input id="rx_dosage" class="form-control input-block" value="500mg" />
+              
+              <div class="Box p-3" style="margin-bottom: 16px;">
+                <label class="form-group">
+                  <div class="text-small color-fg-muted mb-1">Search Medicine</div>
+                  <div class="position-relative">
+                    <input 
+                      id="rx_medicineSearch" 
+                      class="form-control input-block" 
+                      type="text" 
+                      placeholder="Type to search medicines (e.g., Amoxicillin, Paracetamol...)" 
+                      autocomplete="off"
+                    />
+                    <div id="rx_medicineSearchResults" class="Box" style="display: none; max-height: 300px; overflow-y: auto;">
+                      <!-- Search results will appear here -->
+                    </div>
+                  </div>
                 </label>
               </div>
-              <label class="form-group">
-                <div class="text-small color-fg-muted">Duration (days)</div>
-                <input id="rx_durationDays" class="form-control input-block" type="number" value="7" />
-              </label>
-              <button class="btn btn-primary" type="submit">Create + Sign Rx</button>
+              
+              <div class="Box p-3" style="margin-top: 0;">
+                <div class="d-flex flex-justify-between flex-items-center mb-2">
+                  <h4 class="f6 mb-0">Selected Medicines</h4>
+                  <button id="rx_addMedicineBtn" class="btn btn-sm btn-primary" type="button" style="display: none;">+ Add Manually</button>
+                </div>
+                
+                <div id="rx_medicinesTable" class="overflow-auto">
+                  <table class="table" style="min-width: 100%;">
+                    <thead>
+                      <tr>
+                        <th>Medicine Name</th>
+                        <th>Dosage</th>
+                        <th>Duration (days)</th>
+                        <th style="width: 80px;">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody id="rx_medicinesTbody">
+                      <!-- Medicines will be added here dynamically -->
+                    </tbody>
+                  </table>
+                  <div id="rx_noMedicines" class="color-fg-muted text-small text-center p-3">
+                    No medicines added. Search and select medicines above.
+                  </div>
+                </div>
+              </div>
+              
+              <button class="btn btn-primary" type="submit" id="rx_submitBtn" disabled>Create + Sign Prescription</button>
             </form>
+            </div>
 
             <div class="d-flex flex-justify-between flex-items-center mt-3">
               <h4 class="f6 mb-0">Signed Prescription JSON</h4>
@@ -228,32 +300,352 @@
           </div>
 
           <div id="role_pharmacy" hidden>
-            <h3 class="f5 mt-3">Pharmacy: Dispense Gate (Rx + Batch)</h3>
-            <div id="pharmacyBioBox" class="Box p-2 mt-2" hidden>
-              <h4 class="f6 mb-1">Biometric verification required</h4>
-              <div id="pharmacyBioMsg" class="text-small color-fg-muted">
-                Verify biometrics to access dispensing.
+            <div class="d-flex flex-justify-between flex-items-center mb-3">
+              <h3 class="f5 mt-3 mb-0">Pharmacist Dashboard</h3>
+              <div class="BtnGroup">
+                <button id="pharmTabDashboard" class="BtnGroup-item btn btn-sm btn-primary" type="button">Dashboard</button>
+                <button id="pharmTabMedicines" class="BtnGroup-item btn btn-sm" type="button">Medicines</button>
+                <button id="pharmTabStock" class="BtnGroup-item btn btn-sm" type="button">Stock</button>
+                <button id="pharmTabQuality" class="BtnGroup-item btn btn-sm" type="button">Quality</button>
+                <button id="pharmTabDispense" class="BtnGroup-item btn btn-sm" type="button">Dispense</button>
               </div>
-              <div class="d-flex gap-2 mt-2 flex-wrap">
-                <button id="pharmacyEnrollBtn" class="btn btn-sm" type="button">Enroll biometrics</button>
-                <button id="pharmacyVerifyBtn" class="btn btn-sm btn-primary" type="button">Verify biometrics</button>
-              </div>
-              <textarea id="pharmacyBioOut" class="form-control input-block gz-json mt-2" placeholder="Biometric output…"></textarea>
             </div>
-            <form id="dispenseForm" class="d-flex flex-column gap-2">
-              <div class="d-flex flex-justify-between flex-items-center">
-                <div class="text-small color-fg-muted">Prescription JSON</div>
-                <button id="useRxBtn" class="btn btn-sm" type="button">Use last Rx</button>
+
+            <!-- Dashboard Tab -->
+            <div id="pharmDashboardPane">
+              <div class="Box p-3 mb-3">
+                <h4 class="f6 mb-2">Statistics</h4>
+                <button id="pharmLoadDashboard" class="btn btn-sm btn-primary mb-2">Refresh Dashboard</button>
+                <div id="pharmDashboardStats" class="d-flex flex-wrap gap-3">
+                  <div class="Box p-2" style="flex: 1; min-width: 150px;">
+                    <div class="text-small color-fg-muted">Total Medicines</div>
+                    <div id="pharmStatMedicines" class="f3">—</div>
+                  </div>
+                  <div class="Box p-2" style="flex: 1; min-width: 150px;">
+                    <div class="text-small color-fg-muted">Stock Items</div>
+                    <div id="pharmStatStock" class="f3">—</div>
+                  </div>
+                  <div class="Box p-2" style="flex: 1; min-width: 150px;">
+                    <div class="text-small color-fg-muted">Low Stock</div>
+                    <div id="pharmStatLowStock" class="f3 color-fg-attention">—</div>
+                  </div>
+                  <div class="Box p-2" style="flex: 1; min-width: 150px;">
+                    <div class="text-small color-fg-muted">Expired Items</div>
+                    <div id="pharmStatExpired" class="f3 color-fg-danger">—</div>
+                  </div>
+                  <div class="Box p-2" style="flex: 1; min-width: 150px;">
+                    <div class="text-small color-fg-muted">Pending Verifications</div>
+                    <div id="pharmStatPending" class="f3">—</div>
+                  </div>
+                </div>
               </div>
-              <textarea id="dispense_rx" class="form-control input-block gz-json" placeholder="Paste signed prescription JSON…"></textarea>
-              <div class="d-flex flex-justify-between flex-items-center">
-                <div class="text-small color-fg-muted">Batch JSON</div>
-                <button id="useBatchBtn" class="btn btn-sm" type="button">Use last batch</button>
+            </div>
+
+            <!-- Medicines Tab -->
+            <div id="pharmMedicinesPane" hidden>
+              <div class="Box p-3 mb-3">
+                <div class="d-flex flex-justify-between flex-items-center mb-2">
+                  <h4 class="f6 mb-0">Medicines</h4>
+                  <button id="pharmAddMedicineBtn" class="btn btn-sm btn-primary">+ Add Medicine</button>
+                </div>
+                <div class="d-flex gap-2 mb-2">
+                  <input id="pharmMedicineSearch" class="form-control flex-1" type="text" placeholder="Search medicines..." />
+                  <select id="pharmMedicineCategory" class="form-select" style="width: 200px;">
+                    <option value="">All Categories</option>
+                    <option value="Antibiotic">Antibiotic</option>
+                    <option value="Analgesic">Analgesic</option>
+                    <option value="Antihypertensive">Antihypertensive</option>
+                    <option value="Antidiabetic">Antidiabetic</option>
+                    <option value="Cardiovascular">Cardiovascular</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+                <div id="pharmMedicinesList" class="color-fg-muted text-small">Loading medicines...</div>
               </div>
-              <textarea id="dispense_batch" class="form-control input-block gz-json" placeholder="Paste signed batch JSON…"></textarea>
-              <button class="btn btn-primary" type="submit">Dispense</button>
-            </form>
-            <textarea id="dispense_out" class="form-control input-block gz-json mt-2" placeholder="Dispense result…"></textarea>
+
+              <!-- Add/Edit Medicine Modal -->
+              <div id="pharmMedicineModal" class="Box p-3" style="display: none;">
+                <h4 class="f6 mb-2" id="pharmMedicineModalTitle">Add Medicine</h4>
+                <form id="pharmMedicineForm" class="d-flex flex-column gap-2">
+                  <input type="hidden" id="pharmMedicineId" />
+                  <div class="d-flex gap-2">
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Name *</div>
+                      <input id="pharmMedicineName" class="form-control input-block" required />
+                    </label>
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Generic Name</div>
+                      <input id="pharmMedicineGeneric" class="form-control input-block" />
+                    </label>
+                  </div>
+                  <div class="d-flex gap-2">
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Manufacturer *</div>
+                      <input id="pharmMedicineManufacturer" class="form-control input-block" required />
+                    </label>
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Category *</div>
+                      <select id="pharmMedicineCategorySelect" class="form-select input-block" required>
+                        <option value="">Select...</option>
+                        <option value="Antibiotic">Antibiotic</option>
+                        <option value="Analgesic">Analgesic</option>
+                        <option value="Antihypertensive">Antihypertensive</option>
+                        <option value="Antidiabetic">Antidiabetic</option>
+                        <option value="Cardiovascular">Cardiovascular</option>
+                        <option value="Other">Other</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label class="form-group">
+                    <div class="text-small color-fg-muted">Dosage Forms (comma-separated)</div>
+                    <input id="pharmMedicineDosageForms" class="form-control input-block" placeholder="e.g., Tablet, Capsule, Syrup" />
+                  </label>
+                  <label class="form-group">
+                    <div class="text-small color-fg-muted">Strengths (comma-separated)</div>
+                    <input id="pharmMedicineStrengths" class="form-control input-block" placeholder="e.g., 250mg, 500mg" />
+                  </label>
+                  <label class="form-group">
+                    <div class="text-small color-fg-muted">Description</div>
+                    <textarea id="pharmMedicineDescription" class="form-control input-block" rows="2"></textarea>
+                  </label>
+                  <div class="d-flex gap-2">
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Storage Conditions</div>
+                      <input id="pharmMedicineStorage" class="form-control input-block" placeholder="e.g., Store at room temperature" />
+                    </label>
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Expiry Period (days)</div>
+                      <input id="pharmMedicineExpiryPeriod" class="form-control input-block" type="number" />
+                    </label>
+                  </div>
+                  <label class="form-group">
+                    <input type="checkbox" id="pharmMedicineRequiresRx" checked /> Requires Prescription
+                  </label>
+                  <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-primary">Save</button>
+                    <button type="button" id="pharmMedicineCancel" class="btn">Cancel</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            <!-- Stock Tab -->
+            <div id="pharmStockPane" hidden>
+              <div class="Box p-3 mb-3">
+                <div class="d-flex flex-justify-between flex-items-center mb-2">
+                  <h4 class="f6 mb-0">Stock Management</h4>
+                  <button id="pharmAddStockBtn" class="btn btn-sm btn-primary">+ Add Stock</button>
+                </div>
+                <div class="d-flex gap-2 mb-2">
+                  <select id="pharmStockMedicine" class="form-select flex-1">
+                    <option value="">All Medicines</option>
+                  </select>
+                  <select id="pharmStockStatus" class="form-select" style="width: 150px;">
+                    <option value="">All Status</option>
+                    <option value="available">Available</option>
+                    <option value="low_stock">Low Stock</option>
+                    <option value="out_of_stock">Out of Stock</option>
+                    <option value="expired">Expired</option>
+                    <option value="quarantined">Quarantined</option>
+                  </select>
+                  <button id="pharmStockLowStock" class="btn btn-sm">Show Low Stock</button>
+                  <button id="pharmStockExpired" class="btn btn-sm">Show Expired</button>
+                </div>
+                <div id="pharmStockList" class="color-fg-muted text-small">Loading stock...</div>
+              </div>
+
+              <!-- Add/Edit Stock Modal -->
+              <div id="pharmStockModal" class="Box p-3" style="display: none;">
+                <h4 class="f6 mb-2" id="pharmStockModalTitle">Add Stock</h4>
+                <form id="pharmStockForm" class="d-flex flex-column gap-2">
+                  <input type="hidden" id="pharmStockId" />
+                  <label class="form-group">
+                    <div class="text-small color-fg-muted">Medicine *</div>
+                    <select id="pharmStockMedicineSelect" class="form-select input-block" required></select>
+                  </label>
+                  <div class="d-flex gap-2">
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Quantity *</div>
+                      <input id="pharmStockQuantity" class="form-control input-block" type="number" min="0" required />
+                    </label>
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Unit</div>
+                      <input id="pharmStockUnit" class="form-control input-block" value="units" />
+                    </label>
+                  </div>
+                  <div class="d-flex gap-2">
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Expiry Date *</div>
+                      <input id="pharmStockExpiryDate" class="form-control input-block" type="date" required />
+                    </label>
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Location</div>
+                      <input id="pharmStockLocation" class="form-control input-block" placeholder="e.g., Shelf A-1" />
+                    </label>
+                  </div>
+                  <div class="d-flex gap-2">
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Cost per Unit</div>
+                      <input id="pharmStockCost" class="form-control input-block" type="number" step="0.01" />
+                    </label>
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Selling Price per Unit</div>
+                      <input id="pharmStockPrice" class="form-control input-block" type="number" step="0.01" />
+                    </label>
+                  </div>
+                  <div class="d-flex gap-2">
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Min Stock Level</div>
+                      <input id="pharmStockMinLevel" class="form-control input-block" type="number" value="10" />
+                    </label>
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Batch ID</div>
+                      <input id="pharmStockBatchId" class="form-control input-block" />
+                    </label>
+                  </div>
+                  <label class="form-group">
+                    <div class="text-small color-fg-muted">Notes</div>
+                    <textarea id="pharmStockNotes" class="form-control input-block" rows="2"></textarea>
+                  </label>
+                  <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-primary">Save</button>
+                    <button type="button" id="pharmStockCancel" class="btn">Cancel</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            <!-- Quality Verification Tab -->
+            <div id="pharmQualityPane" hidden>
+              <div class="Box p-3 mb-3">
+                <div class="d-flex flex-justify-between flex-items-center mb-2">
+                  <h4 class="f6 mb-0">Quality Verification</h4>
+                  <button id="pharmAddQualityBtn" class="btn btn-sm btn-primary">+ New Verification</button>
+                </div>
+                <div id="pharmQualityList" class="color-fg-muted text-small">Loading verifications...</div>
+              </div>
+
+              <!-- Quality Verification Modal -->
+              <div id="pharmQualityModal" class="Box p-3" style="display: none;">
+                <h4 class="f6 mb-2">Quality Verification</h4>
+                <form id="pharmQualityForm" class="d-flex flex-column gap-2">
+                  <label class="form-group">
+                    <div class="text-small color-fg-muted">Medicine *</div>
+                    <select id="pharmQualityMedicine" class="form-select input-block" required></select>
+                  </label>
+                  <div class="d-flex gap-2">
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Batch ID</div>
+                      <input id="pharmQualityBatchId" class="form-control input-block" />
+                    </label>
+                    <label class="form-group flex-1">
+                      <div class="text-small color-fg-muted">Stock ID</div>
+                      <input id="pharmQualityStockId" class="form-control input-block" />
+                    </label>
+                  </div>
+                  <label class="form-group">
+                    <div class="text-small color-fg-muted">Standard *</div>
+                    <select id="pharmQualityStandard" class="form-select input-block" required>
+                      <option value="">Select Standard...</option>
+                      <option value="USP">USP (United States Pharmacopeia)</option>
+                      <option value="BP">BP (British Pharmacopoeia)</option>
+                      <option value="EP">EP (European Pharmacopoeia)</option>
+                      <option value="WHO">WHO (World Health Organization)</option>
+                      <option value="IP">IP (Indian Pharmacopoeia)</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </label>
+                  <div class="Box p-2">
+                    <div class="text-small color-fg-muted mb-2">Quality Checks</div>
+                    <div class="d-flex flex-column gap-2">
+                      <label class="d-flex flex-justify-between flex-items-center">
+                        <span>Appearance</span>
+                        <select id="pharmQualityAppearance" class="form-select" style="width: 150px;">
+                          <option value="pending">Pending</option>
+                          <option value="pass">Pass</option>
+                          <option value="fail">Fail</option>
+                        </select>
+                      </label>
+                      <label class="d-flex flex-justify-between flex-items-center">
+                        <span>Packaging</span>
+                        <select id="pharmQualityPackaging" class="form-select" style="width: 150px;">
+                          <option value="pending">Pending</option>
+                          <option value="pass">Pass</option>
+                          <option value="fail">Fail</option>
+                        </select>
+                      </label>
+                      <label class="d-flex flex-justify-between flex-items-center">
+                        <span>Labeling</span>
+                        <select id="pharmQualityLabeling" class="form-select" style="width: 150px;">
+                          <option value="pending">Pending</option>
+                          <option value="pass">Pass</option>
+                          <option value="fail">Fail</option>
+                        </select>
+                      </label>
+                      <label class="d-flex flex-justify-between flex-items-center">
+                        <span>Temperature</span>
+                        <select id="pharmQualityTemperature" class="form-select" style="width: 150px;">
+                          <option value="pending">Pending</option>
+                          <option value="pass">Pass</option>
+                          <option value="fail">Fail</option>
+                        </select>
+                      </label>
+                      <label class="d-flex flex-justify-between flex-items-center">
+                        <span>Expiry</span>
+                        <select id="pharmQualityExpiry" class="form-select" style="width: 150px;">
+                          <option value="pending">Pending</option>
+                          <option value="pass">Pass</option>
+                          <option value="fail">Fail</option>
+                        </select>
+                      </label>
+                      <label class="d-flex flex-justify-between flex-items-center">
+                        <span>Batch Certificate</span>
+                        <select id="pharmQualityBatchCert" class="form-select" style="width: 150px;">
+                          <option value="pending">Pending</option>
+                          <option value="pass">Pass</option>
+                          <option value="fail">Fail</option>
+                        </select>
+                      </label>
+                      <label class="d-flex flex-justify-between flex-items-center">
+                        <span>Tamper Evidence</span>
+                        <select id="pharmQualityTamper" class="form-select" style="width: 150px;">
+                          <option value="pending">Pending</option>
+                          <option value="pass">Pass</option>
+                          <option value="fail">Fail</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                  <label class="form-group">
+                    <div class="text-small color-fg-muted">Notes</div>
+                    <textarea id="pharmQualityNotes" class="form-control input-block" rows="3"></textarea>
+                  </label>
+                  <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-primary">Verify</button>
+                    <button type="button" id="pharmQualityCancel" class="btn">Cancel</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            <!-- Dispense Tab (Original) -->
+            <div id="pharmDispensePane" hidden>
+              <h4 class="f6 mt-3 mb-2">Dispense Gate (Rx + Batch)</h4>
+              <form id="dispenseForm" class="d-flex flex-column gap-2">
+                <div class="d-flex flex-justify-between flex-items-center">
+                  <div class="text-small color-fg-muted">Prescription JSON</div>
+                  <button id="useRxBtn" class="btn btn-sm" type="button">Use last Rx</button>
+                </div>
+                <textarea id="dispense_rx" class="form-control input-block gz-json" placeholder="Paste signed prescription JSON…"></textarea>
+                <div class="d-flex flex-justify-between flex-items-center">
+                  <div class="text-small color-fg-muted">Batch JSON</div>
+                  <button id="useBatchBtn" class="btn btn-sm" type="button">Use last batch</button>
+                </div>
+                <textarea id="dispense_batch" class="form-control input-block gz-json" placeholder="Paste signed batch JSON…"></textarea>
+                <button class="btn btn-primary" type="submit">Dispense</button>
+              </form>
+              <textarea id="dispense_out" class="form-control input-block gz-json mt-2" placeholder="Dispense result…"></textarea>
+            </div>
           </div>
 
           <div id="role_admin" hidden>
@@ -359,33 +751,45 @@
 
           <div id="role_patient" hidden>
             <h3 class="f5 mt-3">Patient</h3>
+            
+            <div class="Box p-3 mb-3">
+              <h4 class="f6 mb-2">Book Appointment with Doctor</h4>
+              <form id="appointmentForm" class="d-flex flex-column gap-2">
+                <label class="form-group">
+                  <div class="text-small color-fg-muted">Select Doctor</div>
+                  <select id="apt_doctorId" class="form-select input-block"></select>
+                </label>
+                <div class="d-flex gap-2">
+                  <label class="form-group flex-1">
+                    <div class="text-small color-fg-muted">Appointment Date</div>
+                    <input id="apt_date" class="form-control input-block" type="date" required />
+                  </label>
+                  <label class="form-group flex-1">
+                    <div class="text-small color-fg-muted">Appointment Time</div>
+                    <input id="apt_time" class="form-control input-block" type="time" required />
+                  </label>
+                </div>
+                <label class="form-group">
+                  <div class="text-small color-fg-muted">Notes (optional)</div>
+                  <textarea id="apt_notes" class="form-control input-block" rows="2" placeholder="Any additional notes..."></textarea>
+                </label>
+                <button class="btn btn-primary" type="submit">Book Appointment</button>
+              </form>
+              <div id="apt_out" class="mt-2"></div>
+            </div>
+            
+            <div class="Box p-3 mb-3">
+              <h4 class="f6 mb-2">My Appointments</h4>
+              <button id="loadAppointmentsBtn" class="btn btn-sm btn-primary mb-2">Load Appointments</button>
+              <div id="appointmentsList" class="color-fg-muted text-small">Click to load your appointments</div>
+            </div>
+            
             <div class="Box p-2 mt-2">
               <div class="d-flex flex-justify-between flex-items-center">
-                <div class="d-flex flex-items-center gap-2">
-                  <h4 class="f6 mb-0">Profile</h4>
-                  <span id="patientStatusBadge" class="Label Label--secondary">—</span>
-                </div>
-                <div class="d-flex gap-2">
-                  <button id="patientRefreshBtn" class="btn btn-sm" type="button">Refresh</button>
-                  <button id="patientProfileToggleJsonBtn" class="btn btn-sm" type="button">Show JSON</button>
-                  <button id="patientProfileCopyJsonBtn" class="btn btn-sm" type="button">Copy JSON</button>
-                </div>
+                <h4 class="f6 mb-0">Profile</h4>
+                <button id="patientRefreshBtn" class="btn btn-sm" type="button">Refresh</button>
               </div>
-              <div id="patientProfileReadable" class="mt-2"></div>
-              <textarea id="patient_profile_out" class="form-control input-block gz-json mt-2" hidden placeholder="Profile (JSON)…"></textarea>
-            </div>
-
-            <div class="Box p-2 mt-2">
-              <div class="d-flex flex-justify-between flex-items-center flex-wrap gap-2">
-                <h4 class="f6 mb-0">Login devices</h4>
-                <div class="d-flex gap-2">
-                  <button id="loginDevicesRefreshBtn" class="btn btn-sm" type="button">Refresh</button>
-                  <button id="loginDevicesToggleJsonBtn" class="btn btn-sm" type="button">Show JSON</button>
-                  <button id="loginDevicesCopyJsonBtn" class="btn btn-sm" type="button">Copy JSON</button>
-                </div>
-              </div>
-              <div id="loginDevicesReadable" class="mt-2"></div>
-              <textarea id="loginDevices_out" class="form-control input-block gz-json mt-2" hidden placeholder="Login devices (JSON)…"></textarea>
+              <textarea id="patient_profile_out" class="form-control input-block gz-json mt-2" placeholder="Profile…"></textarea>
             </div>
 
             <div class="Box p-2 mt-2">

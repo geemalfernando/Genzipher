@@ -1,52 +1,385 @@
-<!doctype html>
-<html lang="en" data-color-mode="light" data-light-theme="light">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Pharmacist Registration • GenZipher</title>
-    <link rel="stylesheet" href="https://unpkg.com/@primer/css@17.0.1/dist/primer.css" />
-    <link rel="stylesheet" href="styles.css" />
-  </head>
-  <body class="p-3 p-md-4">
-    <main class="container-sm">
-      <div class="Box p-4">
-        <h1 class="f3 mb-1">Register as Pharmacist</h1>
-        <p class="color-fg-muted">
-          Creates a <span class="gz-mono">pharmacy</span> account. After signup, you’ll be logged in and can enroll biometrics.
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pharmacist Registration - Genzhiper</title>
+  <link rel="stylesheet" href="https://unpkg.com/@primer/css@17.0.1/dist/primer.css">
+  <style>
+    body {
+      background: #f6f8fa;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .signup-container {
+      max-width: 500px;
+      width: 100%;
+    }
+    .logo {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    .logo h1 {
+      color: #0366d6;
+      margin: 0;
+    }
+    .form-section {
+      background: white;
+      border-radius: 6px;
+      padding: 30px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .alert {
+      padding: 12px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+    }
+    .alert-success {
+      background: #d4edda;
+      border: 1px solid #c3e6cb;
+      color: #155724;
+    }
+    .alert-error {
+      background: #f8d7da;
+      border: 1px solid #f5c6cb;
+      color: #721c24;
+    }
+    .alert-info {
+      background: #d1ecf1;
+      border: 1px solid #bee5eb;
+      color: #0c5460;
+    }
+    .text-center {
+      text-align: center;
+    }
+    .mt-3 {
+      margin-top: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="signup-container">
+    <div class="logo">
+      <h1>🏥 Genzhiper Pharmacy</h1>
+      <p class="color-fg-muted">Pharmacist Registration</p>
+    </div>
+
+    <div class="form-section">
+      <div id="alertBox"></div>
+
+      <h2 class="f4 mb-3">Create Your Account</h2>
+      <p class="color-fg-muted text-small mb-4">
+        Register as a pharmacist to access the pharmacy management system.
+        After registration, you'll need to login and enroll your biometric for security.
+      </p>
+
+      <form id="signupForm" class="d-flex flex-column gap-3">
+        <label class="form-group">
+          <div class="text-small color-fg-muted mb-1">Username <span class="color-fg-danger">*</span></div>
+          <input 
+            id="username" 
+            class="form-control input-block" 
+            type="text" 
+            placeholder="pharmacist1" 
+            required
+            pattern="[a-zA-Z0-9._-]{3,32}"
+            title="3-32 characters, letters, numbers, dots, underscores, or hyphens"
+          />
+          <div class="text-small color-fg-muted mt-1">3-32 characters, letters/numbers/._-</div>
+        </label>
+
+        <label class="form-group">
+          <div class="text-small color-fg-muted mb-1">Email <span class="color-fg-danger">*</span></div>
+          <input 
+            id="email" 
+            class="form-control input-block" 
+            type="email" 
+            placeholder="pharmacist@example.com" 
+            required
+          />
+        </label>
+
+        <label class="form-group">
+          <div class="text-small color-fg-muted mb-1">Password <span class="color-fg-danger">*</span></div>
+          <input 
+            id="password" 
+            class="form-control input-block" 
+            type="password" 
+            placeholder="Choose a strong password" 
+            required
+            minlength="8"
+          />
+          <div class="text-small color-fg-muted mt-1">Minimum 8 characters</div>
+        </label>
+
+        <label class="form-group">
+          <div class="text-small color-fg-muted mb-1">Registration Code (MFA) <span class="color-fg-danger">*</span></div>
+          <input 
+            id="mfaCode" 
+            class="form-control input-block" 
+            type="text" 
+            placeholder="123456" 
+            required
+            maxlength="6"
+          />
+          <div class="text-small color-fg-muted mt-1">Use the registration code provided by your administrator</div>
+        </label>
+
+        <button id="submitBtn" class="btn btn-primary btn-block" type="submit">
+          Create Account
+        </button>
+      </form>
+
+      <div class="text-center mt-3">
+        <p class="text-small color-fg-muted">
+          Already have an account? 
+          <a href="/" class="color-fg-blue">Login here</a>
         </p>
-
-        <div id="ps_toast" class="flash" hidden></div>
-
-        <form id="ps_form" class="d-flex flex-column gap-2 mt-3">
-          <label class="form-group">
-            <div class="text-small color-fg-muted">Username</div>
-            <input id="ps_username" class="form-control input-block" placeholder="pharmacist1" required />
-          </label>
-          <label class="form-group">
-            <div class="text-small color-fg-muted">Email</div>
-            <input id="ps_email" class="form-control input-block" placeholder="pharmacist@example.com" required />
-          </label>
-          <label class="form-group">
-            <div class="text-small color-fg-muted">Password</div>
-            <input id="ps_password" class="form-control input-block" type="password" placeholder="password123" required />
-          </label>
-          <label class="form-group">
-            <div class="text-small color-fg-muted">Registration code (MFA)</div>
-            <input id="ps_mfa" class="form-control input-block" placeholder="123456" required />
-          </label>
-          <button class="btn btn-primary" type="submit">Create account</button>
-        </form>
-
-        <div class="text-small color-fg-muted mt-3">
-          Back to <a href="/">login</a>.
-        </div>
-
-        <h4 class="f6 mt-3 mb-1">Output</h4>
-        <textarea id="ps_out" class="form-control input-block gz-json" placeholder="Response…"></textarea>
       </div>
-    </main>
+    </div>
 
-    <script src="pharmacist-signup.js" type="module"></script>
-  </body>
+    <div class="text-center mt-3">
+      <p class="text-small color-fg-muted">
+        After registration, you'll be redirected to login.
+        Then you'll need to enroll your biometric to access the dashboard.
+      </p>
+    </div>
+  </div>
+
+  <script>
+    // Immediate console log to verify page is loading
+    console.log('[PHARMACIST_SIGNUP] HTML page loading...');
+    console.log('[PHARMACIST_SIGNUP] Window location:', window.location.href);
+    
+    // Verify script is executing
+    console.log('[PHARMACIST_SIGNUP] Script section loaded');
+    console.log('[PHARMACIST_SIGNUP] Document ready state:', document.readyState);
+    
+    const API_BASE = window.location.origin;
+    console.log('[PHARMACIST_SIGNUP] API_BASE:', API_BASE);
+    console.log('[PHARMACIST_SIGNUP] Current URL:', window.location.href);
+
+    function showAlert(message, type = 'info') {
+      console.log('[PHARMACIST_SIGNUP] showAlert:', message, type);
+      const alertBox = document.getElementById('alertBox');
+      if (!alertBox) {
+        console.error('[PHARMACIST_SIGNUP] alertBox element not found!');
+        return;
+      }
+      alertBox.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+      setTimeout(() => {
+        alertBox.innerHTML = '';
+      }, 5000);
+    }
+
+    async function api(endpoint, options = {}) {
+      console.log('[PHARMACIST_SIGNUP] API call:', endpoint, options.method || 'GET');
+      const token = localStorage.getItem('auth_token');
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      };
+      
+      // Add auth token if available
+      if (token && !headers['Authorization']) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      
+      try {
+        const response = await fetch(`${API_BASE}${endpoint}`, {
+          ...options,
+          headers,
+          body: options.body ? JSON.stringify(options.body) : undefined,
+        });
+
+        console.log('[PHARMACIST_SIGNUP] API response status:', response.status);
+        const data = await response.json();
+        console.log('[PHARMACIST_SIGNUP] API response data:', data);
+        
+        if (!response.ok) {
+          throw new Error(data.message || data.error || 'Request failed');
+        }
+        return data;
+      } catch (error) {
+        console.error('[PHARMACIST_SIGNUP] API error:', error);
+        throw error;
+      }
+    }
+
+    // Check if we should show biometric enrollment after registration
+    const urlParams = new URLSearchParams(window.location.search);
+    const enrollBiometric = urlParams.get('enrollBiometric') === 'true';
+
+    // Biometric enrollment function
+    async function enrollBiometricAfterSignup(username, token) {
+      const alertBox = document.getElementById('alertBox');
+      alertBox.innerHTML = '<div class="alert alert-info">Please enroll your biometric now. This is required to access the pharmacy dashboard.</div>';
+      
+      try {
+        // Check if WebAuthn is supported
+        if (!window.PublicKeyCredential) {
+          throw new Error('WebAuthn is not supported in this browser. Please use a modern browser with biometric support.');
+        }
+
+        // Get enrollment challenge (use token for authentication)
+        const enrollmentOptions = await api('/biometric/enroll/start', { 
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        // Convert base64url to ArrayBuffer
+        const challengeBuffer = Uint8Array.from(atob(enrollmentOptions.challenge.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+        const userIdBuffer = Uint8Array.from(atob(enrollmentOptions.user.id.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+
+        const publicKeyCredentialCreationOptions = {
+          challenge: challengeBuffer,
+          rp: enrollmentOptions.rp,
+          user: {
+            id: userIdBuffer,
+            name: enrollmentOptions.user.name,
+            displayName: enrollmentOptions.user.displayName,
+          },
+          pubKeyCredParams: enrollmentOptions.pubKeyCredParams,
+          authenticatorSelection: enrollmentOptions.authenticatorSelection,
+          timeout: enrollmentOptions.timeout,
+          attestation: enrollmentOptions.attestation,
+        };
+
+        alertBox.innerHTML = '<div class="alert alert-info">Please scan your fingerprint or face when prompted...</div>';
+        
+        const credential = await navigator.credentials.create({
+          publicKey: publicKeyCredentialCreationOptions
+        });
+
+        console.log('[PHARMACIST_SIGNUP] Credential created:', {
+          id: credential.id,
+          type: credential.type,
+          hasAttestationObject: !!credential.response?.attestationObject,
+          hasClientDataJSON: !!credential.response?.clientDataJSON,
+        });
+
+        const credentialForServer = {
+          id: credential.id,
+          rawId: Array.from(new Uint8Array(credential.rawId)),
+          response: {
+            attestationObject: Array.from(new Uint8Array(credential.response.attestationObject)),
+            clientDataJSON: Array.from(new Uint8Array(credential.response.clientDataJSON)),
+          },
+          type: credential.type,
+        };
+
+        console.log('[PHARMACIST_SIGNUP] Sending credential to server...');
+        const result = await api('/biometric/enroll/complete', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          },
+          body: {
+            credential: credentialForServer,
+            challenge: enrollmentOptions.challenge,
+            deviceName: 'Primary Device',
+          },
+        });
+
+        console.log('[PHARMACIST_SIGNUP] Enrollment result:', result);
+
+        if (result.ok) {
+          alertBox.innerHTML = '<div class="alert alert-success">✅ Biometric enrolled successfully! Redirecting to login...</div>';
+          setTimeout(() => {
+            window.location.href = '/';
+          }, 2000);
+        }
+      } catch (err) {
+        alertBox.innerHTML = `<div class="alert alert-error">❌ Biometric enrollment failed: ${err.message}. You can enroll later after login.</div>`;
+        setTimeout(() => {
+          window.location.href = '/';
+        }, 3000);
+      }
+    }
+
+    // Wait for DOM to be ready
+    document.addEventListener('DOMContentLoaded', () => {
+      console.log('[PHARMACIST_SIGNUP] DOM loaded');
+      const signupForm = document.getElementById('signupForm');
+      if (!signupForm) {
+        console.error('[PHARMACIST_SIGNUP] Form element not found!');
+        return;
+      }
+      console.log('[PHARMACIST_SIGNUP] Form found, attaching submit handler');
+      
+      signupForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        console.log('[PHARMACIST_SIGNUP] Form submitted');
+        
+        const submitBtn = document.getElementById('submitBtn');
+        if (!submitBtn) {
+          console.error('[PHARMACIST_SIGNUP] Submit button not found!');
+          return;
+        }
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Creating Account...';
+
+        try {
+          const username = document.getElementById('username')?.value.trim();
+          const email = document.getElementById('email')?.value.trim();
+          const password = document.getElementById('password')?.value;
+          const mfaCode = document.getElementById('mfaCode')?.value.trim();
+
+          console.log('[PHARMACIST_SIGNUP] Form data:', { username, email, password: password ? '***' : 'missing', mfaCode: mfaCode ? '***' : 'missing' });
+          
+          if (!username || !email || !password || !mfaCode) {
+            throw new Error('Please fill in all fields');
+          }
+
+        const result = await api('/pharmacist/signup', {
+          method: 'POST',
+          body: { username, email, password, mfaCode },
+        });
+
+          console.log('[PHARMACIST_SIGNUP] Registration response:', result);
+
+          // If token is provided, save it and proceed to biometric enrollment
+          if (result.token) {
+            // Store the token (assuming there's a setToken function in the main app)
+            // For now, we'll redirect to main page with token in URL or use localStorage
+            localStorage.setItem('auth_token', result.token);
+            console.log('[PHARMACIST_SIGNUP] Token saved to localStorage');
+            
+            showAlert(`✅ Account created successfully! Username: ${result.username}. Please enroll your biometric now.`, 'success');
+            submitBtn.textContent = 'Account Created!';
+            
+            // Auto-enroll biometric after registration
+            if (result.biometricEnrollmentRequired) {
+              setTimeout(() => {
+                enrollBiometricAfterSignup(result.username, result.token);
+              }, 1500);
+            } else {
+              setTimeout(() => {
+                window.location.href = '/';
+              }, 2000);
+            }
+          } else {
+            showAlert(`✅ Account created successfully! Username: ${result.username}. Please login to continue.`, 'success');
+            setTimeout(() => {
+              window.location.href = '/';
+            }, 2000);
+          }
+        } catch (err) {
+          console.error('[PHARMACIST_SIGNUP] Registration error:', err);
+          showAlert(`❌ Error: ${err.message}`, 'error');
+          if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Create Account';
+          }
+        }
+      });
+    });
+  </script>
+</body>
 </html>
 

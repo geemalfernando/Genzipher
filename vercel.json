@@ -1,7 +1,21 @@
 {
   "version": 2,
   "routes": [
+    { "src": "/health", "dest": "/api/index.js" },
+    { "src": "/auth/(.*)", "dest": "/api/index.js" },
+    { "src": "/patients/(.*)", "dest": "/api/index.js" },
+    { "src": "/clinic/(.*)", "dest": "/api/index.js" },
+    { "src": "/admin/(.*)", "dest": "/api/index.js" },
+    { "src": "/audit/(.*)", "dest": "/api/index.js" },
+    { "src": "/demo/(.*)", "dest": "/api/index.js" },
+    { "src": "/prescriptions/(.*)", "dest": "/api/index.js" },
+    { "src": "/batches/(.*)", "dest": "/api/index.js" },
+    { "src": "/dispense/(.*)", "dest": "/api/index.js" },
+    { "src": "/pharmacist/(.*)", "dest": "/api/index.js" },
+    { "src": "/biometric/(.*)", "dest": "/api/index.js" },
+    { "src": "/pharmacy/(.*)", "dest": "/api/index.js" },
     { "src": "/api", "dest": "/api/index.js" },
-    { "src": "/api/(.*)", "dest": "/api/index.js" }
+    { "src": "/api/(.*)", "dest": "/api/index.js" },
+    { "src": "/(.*)", "dest": "/api/index.js" }
   ]
 }
