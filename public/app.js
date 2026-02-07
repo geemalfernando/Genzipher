@@ -244,6 +244,57 @@ function renderAuditReadable(targetEl, payload) {
   `;
 }
 
+function renderDoctorAppointmentsReadable(targetEl, payload) {
+  const appointments = payload?.appointments || [];
+  const rows = appointments
+    .slice(0, 200)
+    .map((a) => {
+      const when = `${a.appointmentDate || "—"} ${a.appointmentTime || "—"}`;
+      const patient = a.patient?.username ? `${a.patient.username} (${a.patient.id})` : (a.patientId || "—");
+      const notes = a.notes ? String(a.notes).slice(0, 160) : "—";
+      return `<tr>
+        <td class="text-small color-fg-muted">${escapeHtml(when)}</td>
+        <td class="text-small">${escapeHtml(patient)}</td>
+        <td class="text-small"><span class="Label Label--secondary">${escapeHtml(a.status || "—")}</span></td>
+        <td class="text-small color-fg-muted">${escapeHtml(notes)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  targetEl.innerHTML = `
+    <div class="d-flex flex-items-center flex-wrap gap-2">
+      <span class="Label Label--secondary">Appointments: ${appointments.length}</span>
+    </div>
+    <div class="mt-2 overflow-x-auto">
+      <table class="table-list width-full">
+        <thead>
+          <tr>
+            <th class="text-small">When</th>
+            <th class="text-small">Patient</th>
+            <th class="text-small">Status</th>
+            <th class="text-small">Notes</th>
+          </tr>
+        </thead>
+        <tbody>${rows || `<tr><td colspan="4" class="text-small color-fg-muted">No appointments found.</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function onLoadDoctorAppointments() {
+  try {
+    const out = await api("/doctor/appointments");
+    window.__doctorAppointmentsCache = out;
+    const ta = $("doctorAppointmentsOut");
+    if (ta) ta.value = pretty(out);
+    const host = $("doctorAppointmentsReadable");
+    if (host) renderDoctorAppointmentsReadable(host, out);
+    toast("Appointments loaded", "success");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
 function getToken() {
   return localStorage.getItem("gz_token") || localStorage.getItem("auth_token");
 }
@@ -369,7 +420,7 @@ function resetRemainingAttempts(maxAttempts, attemptsUsed) {
   if (el) el.textContent = String(remaining);
 }
 
-async function api(path, { method = "GET", body } = {}) {
+async function api(path, { method = "GET", body, __retried = false } = {}) {
   const token = getToken();
   const deviceId = getDeviceId();
   let csrf = getCsrfToken();
@@ -408,6 +459,31 @@ async function api(path, { method = "GET", body } = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    // If the backend was redeployed (JWT secret rotated) the stored CSRF token may become invalid.
+    // Auto-refresh once and retry the original request.
+    if (
+      needsCsrf &&
+      token &&
+      !__retried &&
+      res.status === 403 &&
+      (data?.error === "csrf_invalid" || data?.error === "csrf_missing")
+    ) {
+      setCsrfToken(null);
+      try {
+        const r = await fetch(`${API_BASE}/auth/csrf`, {
+          method: "GET",
+          headers: {
+            authorization: `Bearer ${token}`,
+            ...(deviceId ? { "x-gz-device-id": deviceId } : {}),
+          },
+        });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok && j?.csrfToken) setCsrfToken(j.csrfToken);
+      } catch {
+        // ignore
+      }
+      return api(path, { method, body, __retried: true });
+    }
     if (path === "/auth/forgot-password/verify-otp" && (data?.remainingAttempts !== undefined || data?.maxAttempts !== undefined)) {
       const maxA = Number(data?.maxAttempts || 3);
       const rem = Number(data?.remainingAttempts ?? 0);
@@ -2655,6 +2731,20 @@ async function init() {
     d.setFullYear(d.getFullYear() + 1);
     expiryEl.value = d.toISOString().slice(0, 10);
   }
+
+  $("doctorLoadAppointmentsBtn")?.addEventListener("click", onLoadDoctorAppointments);
+  $("doctorAppointmentsToggleJsonBtn")?.addEventListener("click", () => {
+    const ta = $("doctorAppointmentsOut");
+    if (!ta) return;
+    const showing = !ta.hidden;
+    ta.hidden = showing;
+    $("doctorAppointmentsToggleJsonBtn").textContent = showing ? "Show JSON" : "Hide JSON";
+  });
+  $("doctorAppointmentsCopyJsonBtn")?.addEventListener("click", async () => {
+    const text = $("doctorAppointmentsOut")?.value || pretty(window.__doctorAppointmentsCache || {});
+    await navigator.clipboard.writeText(text);
+    toast("Copied appointments JSON", "success");
+  });
 }
 
 init().catch((err) => {

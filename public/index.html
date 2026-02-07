@@ -324,6 +324,17 @@
             </div>
             <textarea id="rx_out" class="form-control input-block gz-json mt-2" placeholder="Create an Rx to populate…"></textarea>
             <textarea id="rx_verify_out" class="form-control input-block gz-json mt-2" placeholder="Verification result…"></textarea>
+
+            <div class="Box p-2 mt-3">
+              <h4 class="f6 mb-2">Doctor: Appointments</h4>
+              <div class="d-flex gap-2 flex-wrap">
+                <button id="doctorLoadAppointmentsBtn" class="btn btn-sm btn-primary" type="button">Load appointments</button>
+                <button id="doctorAppointmentsToggleJsonBtn" class="btn btn-sm" type="button">Show JSON</button>
+                <button id="doctorAppointmentsCopyJsonBtn" class="btn btn-sm" type="button">Copy JSON</button>
+              </div>
+              <div id="doctorAppointmentsReadable" class="mt-2"></div>
+              <textarea id="doctorAppointmentsOut" class="form-control input-block gz-json mt-2" hidden placeholder="Doctor appointments (JSON)…"></textarea>
+            </div>
           </div>
 
           <div id="role_manufacturer" hidden>

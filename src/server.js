@@ -2670,6 +2670,48 @@ async function buildApp() {
     res.json({ count: appointments.length, appointments });
   }));
 
+  // Doctor: view appointments assigned to them
+  app.get("/doctor/appointments", requireAuth, requireRole(["doctor"]), asyncRoute(async (req, res) => {
+    const status = isNonEmptyString(req.query?.status) ? String(req.query.status).trim() : null;
+    const date = isNonEmptyString(req.query?.date) ? String(req.query.date).trim() : null;
+    if (date && !looksLikeIsoDate(date)) {
+      return res.status(400).json({ error: "bad_request", message: "date must be YYYY-MM-DD" });
+    }
+    const filter = {
+      doctorId: req.auth.sub,
+      ...(status ? { status } : {}),
+      ...(date ? { appointmentDate: date } : {}),
+    };
+
+    const appointments = await Appointment.find(
+      filter,
+      { _id: 0, __v: 0, requestedIp: 0, patientToken: 0, integrityHash: 0 }
+    )
+      .sort({ appointmentDate: -1, appointmentTime: -1, createdAt: -1 })
+      .limit(200)
+      .lean();
+
+    const patientIds = [...new Set(appointments.map((a) => a.patientId))];
+    const patients = await User.find(
+      { id: { $in: patientIds }, role: "patient" },
+      { _id: 0, id: 1, username: 1, email: 1, status: 1 }
+    ).lean();
+    const patientById = new Map(patients.map((p) => [p.id, p]));
+
+    const out = appointments.map((a) => ({
+      ...a,
+      patient: patientById.get(a.patientId) ? { id: a.patientId, username: patientById.get(a.patientId).username } : { id: a.patientId, username: null },
+    }));
+
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+      action: "appointment.doctor_list",
+      details: { returned: out.length, status: status || null, date: date || null },
+    });
+
+    res.json({ count: out.length, appointments: out });
+  }));
+
   // Doctor: patient search (used by UI)
   app.get("/doctors/patients/search", requireAuth, requireRole(["doctor"]), asyncRoute(async (req, res) => {
     const q = isNonEmptyString(req.query?.query) ? String(req.query.query).trim() : "";
