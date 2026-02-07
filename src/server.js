@@ -337,7 +337,7 @@ async function issueLoginOtp({ user }) {
   return issueOtpRequest({ user, purpose: "LOGIN" });
 }
 
-async function start() {
+async function buildApp() {
   await connectMongo();
   await ensureIndexes();
 
@@ -1855,14 +1855,29 @@ async function start() {
     res.status(500).json({ error: "internal_error" });
   });
 
+  return app;
+}
+
+let __appPromise = null;
+export async function getApp() {
+  if (!__appPromise) __appPromise = buildApp();
+  return __appPromise;
+}
+
+export async function startServer() {
+  const app = await getApp();
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`MVP listening on http://localhost:${PORT}`);
   });
 }
 
-start().catch((err) => {
-  // eslint-disable-next-line no-console
-  console.error(err);
-  process.exit(1);
-});
+const __filename = fileURLToPath(import.meta.url);
+const __isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename);
+if (__isMain) {
+  startServer().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error(err);
+    process.exit(1);
+  });
+}

@@ -1,4 +1,4 @@
-const API_BASE = "";
+const API_BASE = window.GZ_API_BASE || "";
 
 function $(id) {
   return document.getElementById(id);
