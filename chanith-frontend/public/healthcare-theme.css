@@ -9,6 +9,10 @@
   --healthcare-success: #52C9A2;
   --healthcare-danger: #EF4444;
   --healthcare-warning: #F59E0B;
+  --healthcare-success-bg: #d1fae5;
+  --healthcare-error-bg: #fee2e2;
+  --healthcare-warning-bg: #fef3c7;
+  --healthcare-info-bg: #dbeafe;
   --healthcare-bg: #F5F7FA;
   --healthcare-card: #ffffff;
   --healthcare-text: #2C3E50;
@@ -756,6 +760,45 @@ body {
   color: var(--healthcare-text);
 }
 
+/* Toast notifications (used by utils/api.js toast()) */
+.flash {
+  border-radius: 12px;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--healthcare-border);
+  background: var(--healthcare-card);
+  color: var(--healthcare-text);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+  backdrop-filter: blur(6px);
+  max-width: min(420px, calc(100vw - 2rem));
+  animation: gzToastIn 160ms ease-out;
+}
+
+.flash-success {
+  border-left: 6px solid var(--healthcare-success);
+  background: var(--healthcare-success-bg);
+}
+
+.flash-error {
+  border-left: 6px solid var(--healthcare-danger);
+  background: var(--healthcare-error-bg);
+}
+
+.flash-warning {
+  border-left: 6px solid var(--healthcare-warning);
+  background: var(--healthcare-warning-bg);
+}
+
+@keyframes gzToastIn {
+  from {
+    transform: translateY(-8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
 /* Dashboard Layout */
 .dashboard-container {
   display: flex;
@@ -1010,4 +1053,3 @@ body {
 
 .gap-2 { gap: 1rem; }
 .gap-3 { gap: 1.5rem; }
-
