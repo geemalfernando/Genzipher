@@ -112,7 +112,8 @@ function verifyPasswordScrypt(stored, password) {
   const s = String(stored);
   if (!s.startsWith("scrypt$")) return false;
   const parts = s.split("$");
-  if (parts.length !== 7) return false;
+  // Format: scrypt$N$r$p$saltB64u$hashB64u
+  if (parts.length !== 6) return false;
   const N = Number(parts[1]);
   const r = Number(parts[2]);
   const p = Number(parts[3]);
@@ -571,6 +572,9 @@ async function buildApp() {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const publicDir = path.resolve(__dirname, "../public");
+
+  // Avoid noisy 404s for default browser icon requests in hosted environments.
+  app.get(["/favicon.ico", "/favicon.png"], (req, res) => res.status(204).end());
 
   // If the backend is hosted separately from the frontend, redirect browser visits to `/`
   // to the configured public URL (e.g. Firebase Hosting). Keep API routes unaffected.
