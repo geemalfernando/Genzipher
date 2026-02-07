@@ -8,7 +8,7 @@ const BiometricSchema = new mongoose.Schema(
     id: { type: String, required: true, unique: true, index: true },
     userId: { type: String, required: true, index: true },
     role: { type: String, required: true, enum: ["pharmacy", "doctor", "admin", "manufacturer"], index: true },
-    credentialIdB64u: { type: String, required: true, unique: true, index: true },
+    credentialIdB64u: { type: String, required: true },
     publicKeyJson: { type: String, required: true },
     counter: { type: Number, default: 0 },
     deviceName: { type: String, default: null },
@@ -17,6 +17,18 @@ const BiometricSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: true, index: true },
   },
   { timestamps: true }
+);
+
+// Unique credential IDs, but avoid startup failures if old/invalid documents exist with null/empty values.
+// Only enforce uniqueness when the field is a non-empty string.
+BiometricSchema.index(
+  { credentialIdB64u: 1 },
+  {
+    unique: true,
+    // Note: keep the partial filter simple for broad MongoDB compatibility.
+    // This excludes null/undefined values (the main cause of dup-key failures on startup).
+    partialFilterExpression: { credentialIdB64u: { $exists: true, $type: "string" } },
+  }
 );
 
 BiometricSchema.index({ userId: 1, isActive: 1 });
