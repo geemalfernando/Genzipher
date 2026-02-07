@@ -44,7 +44,7 @@ const PORT = Number(process.env.PORT || 3000);
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 const DEMO_MFA_CODE = process.env.DEMO_MFA_CODE || "123456";
 const MFA_REQUIRED_ROLES = new Set(["doctor", "pharmacy", "manufacturer", "admin"]);
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
+const CORS_ORIGIN = (process.env.CORS_ORIGIN || process.env.PUBLIC_BASE_URL || "").trim();
 const DEVICE_STEP_UP_ROLES = new Set(
   (process.env.DEVICE_STEP_UP_ROLES || "patient,doctor")
     .split(",")
@@ -365,16 +365,22 @@ async function buildApp() {
   );
 
   app.use(
-    cors(
-      CORS_ORIGIN
-        ? {
-            origin: CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean),
-          }
-        : {
-            origin: false,
-          }
-    )
+    cors({
+      origin: (origin, cb) => {
+        // Allow same-origin / non-browser clients
+        if (!origin) return cb(null, true);
+
+        const allowed = CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
+        if (allowed.length === 0) return cb(null, false);
+        if (allowed.includes(origin)) return cb(null, true);
+        return cb(null, false);
+      },
+      optionsSuccessStatus: 204,
+    })
   );
+
+  // Ensure CORS preflights are handled for all routes
+  app.options("*", cors());
 
   app.use(express.json({ limit: "1mb", type: ["application/json", "application/*+json"] }));
   app.use(mongoSanitize({ replaceWith: "_" }));
