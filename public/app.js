@@ -1220,11 +1220,16 @@ async function checkBiometricStatus() {
       if (enrollBtn) {
         enrollBtn.hidden = false;
         enrollBtn.classList.add("btn-primary");
+        // Some templates used `style="display:none"`; ensure it's actually visible.
+        enrollBtn.style.display = "";
       }
       if (verifyBtn) verifyBtn.disabled = true;
       if (statusEl) statusEl.textContent = "No biometric enrolled. Please enroll first.";
     } else {
-      if (enrollBtn) enrollBtn.hidden = true;
+      if (enrollBtn) {
+        enrollBtn.hidden = true;
+        enrollBtn.style.display = "none";
+      }
       if (verifyBtn) verifyBtn.disabled = false;
       if (statusEl) statusEl.textContent = `Biometric enrolled. ${status.biometrics.length} device(s) registered.`;
     }
@@ -1234,6 +1239,7 @@ async function checkBiometricStatus() {
     if (enrollBtn) {
       enrollBtn.hidden = false;
       enrollBtn.classList.add("btn-primary");
+      enrollBtn.style.display = "";
     }
   }
 }
@@ -1341,6 +1347,7 @@ async function handlePharmacyBiometricVerification() {
       if (enrollBtn) {
         enrollBtn.hidden = false;
         enrollBtn.disabled = false;
+        enrollBtn.style.display = "";
       }
       if (btn) btn.disabled = false;
       return;
