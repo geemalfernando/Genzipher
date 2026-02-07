@@ -51,15 +51,15 @@
           <div id="loginPane">
             <form id="loginForm" class="d-flex flex-column gap-2">
               <label class="form-group">
-                <div class="text-small color-fg-muted">Username</div>
-                <input id="login_username" class="form-control input-block" value="doctor1" />
+                <div class="text-small color-fg-muted">Username or email</div>
+                <input id="login_identifier" class="form-control input-block" value="doctor1" />
               </label>
               <label class="form-group">
                 <div class="text-small color-fg-muted">Password</div>
                 <input id="login_password" class="form-control input-block" type="password" value="password123" />
               </label>
               <label class="form-group">
-                <div class="text-small color-fg-muted">MFA (optional)</div>
+                <div class="text-small color-fg-muted">MFA (required for admin/doctor/pharmacy/manufacturer)</div>
                 <input id="login_mfa" class="form-control input-block" placeholder="123456" />
               </label>
               <button class="btn btn-primary" type="submit">Login</button>
@@ -67,6 +67,32 @@
                 Try: <span class="gz-mono">doctor1</span>, <span class="gz-mono">mfg1</span>, <span class="gz-mono">pharmacy1</span>, <span class="gz-mono">admin1</span>, <span class="gz-mono">patient1</span>
               </div>
             </form>
+
+            <div id="otpBox" class="Box p-2 mt-3" hidden>
+              <h3 class="f6 mb-1">Email OTP</h3>
+              <p class="color-fg-muted text-small mb-2">
+                Enter the 6-digit code. (MVP delivery: check server terminal logs.)
+              </p>
+              <form id="otpForm" class="d-flex flex-column gap-2">
+                <label class="form-group">
+                  <div class="text-small color-fg-muted">OTP</div>
+                  <input id="otp_code" class="form-control input-block" inputmode="numeric" placeholder="123456" />
+                </label>
+                <div class="form-checkbox">
+                  <label>
+                    <input id="otp_remember" type="checkbox" checked />
+                    Trust this device (skip OTP for 30 days)
+                  </label>
+                </div>
+                <div class="d-flex gap-2">
+                  <button class="btn btn-primary" type="submit">Verify OTP</button>
+                  <button id="otpResendBtn" class="btn" type="button">Resend</button>
+                </div>
+                <div class="text-small color-fg-muted">
+                  Expires: <span id="otp_expires" class="gz-mono">—</span> • Sent to: <span id="otp_sentTo" class="gz-mono">—</span>
+                </div>
+              </form>
+            </div>
           </div>
 
           <div id="registerPane" hidden>
@@ -81,26 +107,20 @@
                 <input id="pr_username" class="form-control input-block" placeholder="newpatient1" />
               </label>
               <label class="form-group">
+                <div class="text-small color-fg-muted">Email</div>
+                <input id="pr_email" class="form-control input-block" placeholder="patient@example.com" />
+              </label>
+              <label class="form-group">
                 <div class="text-small color-fg-muted">New password</div>
                 <input id="pr_password" class="form-control input-block" type="password" placeholder="Choose a password" />
               </label>
-              <div class="d-flex gap-2">
-                <label class="form-group flex-1">
-                  <div class="text-small color-fg-muted">Geo (optional)</div>
-                  <input id="pr_geo" class="form-control input-block" placeholder="Clinic-A" />
-                </label>
-                <label class="form-group flex-1">
-                  <div class="text-small color-fg-muted">Device ID (optional)</div>
-                  <input id="pr_deviceId" class="form-control input-block" placeholder="wearable-01" />
-                </label>
-              </div>
               <button class="btn btn-primary" type="submit">Pre-register</button>
             </form>
 
             <h4 class="f6 mt-3 mb-1">Result</h4>
             <textarea id="pr_out" class="form-control input-block gz-json" placeholder="Pre-register output…"></textarea>
 
-            <h3 class="f5 mt-3">Verify with clinic code</h3>
+            <h3 class="f5 mt-3">Verify your account</h3>
             <form id="verifyClinicForm" class="d-flex flex-column gap-2">
               <div class="d-flex gap-2">
                 <label class="form-group flex-1">
@@ -113,10 +133,10 @@
                 </label>
               </div>
               <label class="form-group">
-                <div class="text-small color-fg-muted">Clinic code (one-time)</div>
+                <div class="text-small color-fg-muted">Verification code (one-time)</div>
                 <input id="vc_code" class="form-control input-block" placeholder="8-char code" />
               </label>
-              <button class="btn" type="submit">Verify clinic code</button>
+              <button class="btn" type="submit">Verify code</button>
             </form>
 
             <h4 class="f6 mt-3 mb-1">Verification result</h4>
@@ -225,11 +245,40 @@
           <div id="role_admin" hidden>
             <h3 class="f5 mt-3">Admin/Compliance: Audit Log</h3>
             <div class="Box p-2 mt-2">
-              <h4 class="f6 mb-2">Issue clinic verification code</h4>
+              <h4 class="f6 mb-2">User activity</h4>
+              <div class="d-flex gap-2 flex-wrap">
+                <label class="form-group flex-1">
+                  <div class="text-small color-fg-muted">User</div>
+                  <select id="adminUserSelect" class="form-select input-block"></select>
+                </label>
+                <label class="form-group flex-1">
+                  <div class="text-small color-fg-muted">Action filter (optional)</div>
+                  <input id="adminActionFilter" class="form-control input-block" placeholder="auth.login_failed" />
+                </label>
+              </div>
+              <div class="d-flex gap-2">
+                <button id="adminLoadUserAuditBtn" class="btn btn-sm btn-primary" type="button">Load logs</button>
+                <button id="adminUserAuditToggleJsonBtn" class="btn btn-sm" type="button">Show JSON</button>
+                <button id="adminUserAuditCopyJsonBtn" class="btn btn-sm" type="button">Copy JSON</button>
+              </div>
+              <div id="adminUserAuditReadable" class="mt-2"></div>
+              <textarea id="adminUserAuditOut" class="form-control input-block gz-json mt-2" hidden placeholder="User-scoped audit logs (JSON)…"></textarea>
+            </div>
+
+            <div class="Box p-2 mt-2">
+              <h4 class="f6 mb-2">Verify patients (clinic code)</h4>
+              <div class="d-flex flex-justify-between flex-items-center flex-wrap gap-2">
+                <div class="text-small color-fg-muted">Pending patients</div>
+                <button id="adminLoadPendingBtn" class="btn btn-sm" type="button">Refresh list</button>
+              </div>
+              <div class="mt-2">
+                <select id="adminPendingSelect" class="form-select input-block"></select>
+              </div>
+
               <form id="clinicCodeForm" class="d-flex flex-column gap-2">
                 <div class="d-flex gap-2">
                   <label class="form-group flex-1">
-                    <div class="text-small color-fg-muted">Bind to patientId (optional)</div>
+                    <div class="text-small color-fg-muted">Bind to patientId</div>
                     <input id="cc_patientId" class="form-control input-block" placeholder="u_patient_..." />
                   </label>
                   <label class="form-group flex-1">
@@ -237,6 +286,15 @@
                     <input id="cc_expires" class="form-control input-block" type="number" value="10" />
                   </label>
                 </div>
+                <label class="form-group">
+                  <div class="text-small color-fg-muted">Delivery</div>
+                  <div class="form-checkbox">
+                    <label>
+                      <input id="cc_sendEmail" type="checkbox" checked />
+                      Send code to patient email (SMTP required)
+                    </label>
+                  </div>
+                </label>
                 <button class="btn btn-sm" type="submit">Generate code</button>
               </form>
               <div class="mt-2">
@@ -248,10 +306,41 @@
                 <div class="text-small color-fg-muted mt-1">
                   Expiry: <span id="cc_expiry" class="gz-mono">—</span>
                 </div>
+                <div class="text-small color-fg-muted mt-1">
+                  Delivery: <span id="cc_delivery" class="gz-mono">—</span> • Sent to: <span id="cc_sentTo" class="gz-mono">—</span>
+                </div>
               </div>
             </div>
-            <button id="auditLoadBtn" class="btn btn-primary btn-sm">Load latest 200 entries</button>
-            <textarea id="audit_out" class="form-control input-block gz-json mt-2" placeholder="Audit entries…"></textarea>
+
+            <div class="Box p-2 mt-2">
+              <h4 class="f6 mb-2">SMTP test</h4>
+              <div class="d-flex flex-justify-between flex-items-center flex-wrap gap-2">
+                <div class="text-small color-fg-muted">Connectivity/auth check</div>
+                <button id="smtpStatusBtn" class="btn btn-sm" type="button">Verify SMTP</button>
+              </div>
+              <code id="smtpStatusOut" class="gz-mono d-block mt-2">—</code>
+              <form id="mailTestForm" class="d-flex flex-column gap-2">
+                <label class="form-group">
+                  <div class="text-small color-fg-muted">Send test email to</div>
+                  <input id="mailTestTo" class="form-control input-block" placeholder="you@example.com" />
+                </label>
+                <button class="btn btn-sm" type="submit">Send test</button>
+              </form>
+              <div class="text-small color-fg-muted mt-1">
+                Uses <span class="gz-mono">POST /admin/mail/test</span>. If it fails, error details will show in the toast.
+              </div>
+            </div>
+
+            <div class="Box p-2 mt-2">
+              <h4 class="f6 mb-2">System audit</h4>
+              <div class="d-flex gap-2 flex-wrap">
+                <button id="auditLoadBtn" class="btn btn-primary btn-sm" type="button">Load latest 200</button>
+                <button id="auditToggleJsonBtn" class="btn btn-sm" type="button">Show JSON</button>
+                <button id="auditCopyJsonBtn" class="btn btn-sm" type="button">Copy JSON</button>
+              </div>
+              <div id="auditReadable" class="mt-2"></div>
+              <textarea id="audit_out" class="form-control input-block gz-json mt-2" hidden placeholder="Audit entries (JSON)…"></textarea>
+            </div>
           </div>
 
           <div id="role_patient" hidden>
@@ -262,6 +351,56 @@
                 <button id="patientRefreshBtn" class="btn btn-sm" type="button">Refresh</button>
               </div>
               <textarea id="patient_profile_out" class="form-control input-block gz-json mt-2" placeholder="Profile…"></textarea>
+            </div>
+
+            <div class="Box p-2 mt-2">
+              <h4 class="f6 mb-2">Enable MFA (Email OTP)</h4>
+              <form id="patientMfaForm" class="d-flex flex-column gap-2">
+                <label class="form-group">
+                  <div class="text-small color-fg-muted">Email (optional)</div>
+                  <input id="patient_mfa_email" class="form-control input-block" placeholder="you@example.com" />
+                </label>
+                <button class="btn btn-sm" type="submit">Enable Email OTP MFA</button>
+              </form>
+            </div>
+
+            <div class="Box p-2 mt-2">
+              <h4 class="f6 mb-2">Disable MFA</h4>
+              <button id="mfaDisableRequestBtn" class="btn btn-sm btn-danger" type="button">Send disable code</button>
+              <div id="mfaDisableBox" class="mt-2" hidden>
+                <div class="text-small color-fg-muted">Enter OTP sent to your email</div>
+                <div class="d-flex gap-2 mt-2">
+                  <input id="mfaDisableOtp" class="form-control" placeholder="123456" inputmode="numeric" />
+                  <button id="mfaDisableConfirmBtn" class="btn btn-primary btn-sm" type="button">Disable</button>
+                </div>
+                <div class="text-small color-fg-muted mt-2">
+                  otpRequestId: <span id="mfaDisableOtpId" class="gz-mono">—</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="Box p-2 mt-2">
+              <h4 class="f6 mb-2">Trusted device</h4>
+              <div class="d-flex flex-justify-between flex-items-center flex-wrap gap-2">
+                <div class="text-small color-fg-muted">Devices trusted for OTP bypass</div>
+                <button id="trustedRefreshBtn" class="btn btn-sm" type="button">Refresh</button>
+              </div>
+              <select id="trustedSelect" class="form-select input-block mt-2"></select>
+
+              <div class="d-flex gap-2 mt-2">
+                <button id="trustedRemoveBtn" class="btn btn-sm btn-danger" type="button">Remove selected (email OTP)</button>
+              </div>
+
+              <div id="trustedRemoveOtpBox" class="Box p-2 mt-2" hidden>
+                <div class="text-small color-fg-muted">Enter the OTP sent to your email to confirm removal.</div>
+                <div class="d-flex gap-2 mt-2">
+                  <input id="trustedRemoveOtp" class="form-control" placeholder="123456" inputmode="numeric" />
+                  <button id="trustedRemoveConfirmBtn" class="btn btn-primary btn-sm" type="button">Confirm</button>
+                </div>
+                <div class="text-small color-fg-muted mt-2">
+                  otpRequestId: <span id="trustedRemoveOtpId" class="gz-mono">—</span>
+                </div>
+              </div>
             </div>
 
             <div class="Box p-2 mt-2">
@@ -279,39 +418,19 @@
             </div>
 
             <div class="Box p-2 mt-2">
-              <h4 class="f6 mb-2">Bind device (challenge → verify)</h4>
-              <form id="bindDeviceForm" class="d-flex flex-column gap-2">
-                <label class="form-group">
-                  <div class="text-small color-fg-muted">Device ID</div>
-                  <input id="bd_deviceId" class="form-control input-block" placeholder="wearable-01" />
-                </label>
-                <label class="form-group">
-                  <div class="text-small color-fg-muted">Device public key PEM (Ed25519)</div>
-                  <textarea id="bd_publicKeyPem" class="form-control input-block gz-json" placeholder="-----BEGIN PUBLIC KEY-----..."></textarea>
-                </label>
-                <label class="form-group">
-                  <div class="text-small color-fg-muted">Fingerprint hash (optional)</div>
-                  <input id="bd_fingerprint" class="form-control input-block" placeholder="sha256:..." />
-                </label>
-                <button class="btn btn-sm" type="submit">Create challenge</button>
-              </form>
-
-              <div class="mt-2">
-                <div class="text-small color-fg-muted">Challenge payload to sign</div>
-                <textarea id="bd_challenge" class="form-control input-block gz-json" placeholder='{"deviceId":"...","nonce":"..."}'></textarea>
-              </div>
-
-              <form id="verifyDeviceForm" class="d-flex flex-column gap-2 mt-2">
-                <label class="form-group">
-                  <div class="text-small color-fg-muted">Signature (base64url) over challenge payload</div>
-                  <input id="bd_signature" class="form-control input-block" placeholder="base64url..." />
-                </label>
-                <button class="btn btn-sm btn-primary" type="submit">Verify device</button>
-              </form>
-              <textarea id="bd_out" class="form-control input-block gz-json mt-2" placeholder="Bind/verify output…"></textarea>
-              <p class="color-fg-muted text-small mt-2 mb-0">
-                Tip: sign the challenge in a device app. For demo: generate keys + signature with <span class="gz-mono">node scripts/device-sign.js</span>.
+              <h4 class="f6 mb-2">Device binding</h4>
+              <p class="color-fg-muted text-small mb-2">
+                Automatic: this browser generates a device key, binds once, then signs challenges automatically (no manual copy/paste).
               </p>
+              <div class="d-flex flex-items-center flex-justify-between flex-wrap gap-2">
+                <div class="text-small color-fg-muted">
+                  Device ID: <span id="autoDeviceId" class="gz-mono">—</span>
+                </div>
+                <div class="d-flex gap-2">
+                  <button id="autoBindBtn" class="btn btn-sm" type="button">Bind/Verify now</button>
+                </div>
+              </div>
+              <textarea id="autoBindOut" class="form-control input-block gz-json mt-2" placeholder="Device bind status/output…"></textarea>
             </div>
           </div>
         </section>

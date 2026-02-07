@@ -1,0 +1,91 @@
+import nodemailer from "nodemailer";
+
+function env(key, fallback = "") {
+  return (process.env[key] || fallback).trim();
+}
+
+function boolEnv(key, fallback = false) {
+  const v = env(key, "");
+  if (!v) return fallback;
+  return ["1", "true", "yes", "on"].includes(v.toLowerCase());
+}
+
+export function isSmtpEnabled() {
+  return Boolean(env("SMTP_HOST") && env("SMTP_USER") && env("SMTP_PASS"));
+}
+
+let cachedTransporter = null;
+
+export function getMailer() {
+  if (cachedTransporter) return cachedTransporter;
+
+  const host = env("SMTP_HOST");
+  const port = Number(env("SMTP_PORT", "465"));
+  const secure = boolEnv("SMTP_SECURE", port === 465);
+  const user = env("SMTP_USER");
+  const pass = env("SMTP_PASS");
+  const debug = boolEnv("SMTP_DEBUG", false);
+  const tlsRejectUnauthorized = boolEnv("SMTP_TLS_REJECT_UNAUTHORIZED", true);
+
+  cachedTransporter = nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: { user, pass },
+    tls: {
+      rejectUnauthorized: tlsRejectUnauthorized,
+    },
+    logger: debug,
+    debug,
+  });
+
+  return cachedTransporter;
+}
+
+export async function verifySmtpConnection() {
+  if (!isSmtpEnabled()) return { ok: false, error: "smtp_not_configured" };
+  const transporter = getMailer();
+  try {
+    await transporter.verify();
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: "smtp_verify_failed",
+      detail: {
+        name: err?.name,
+        code: err?.code,
+        message: err?.message,
+        responseCode: err?.responseCode,
+        response: err?.response,
+        command: err?.command,
+      },
+    };
+  }
+}
+
+export async function sendOtpEmail({ to, otp, expiresAtIso }) {
+  const transporter = getMailer();
+  const from = (process.env.FROM_EMAIL || process.env.SMTP_USER || "").trim();
+  if (!from) throw new Error("FROM_EMAIL not set");
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: "Your GenZipher login code",
+    text: `Your login code is: ${otp}\n\nIt expires at: ${expiresAtIso}\n\nIf you did not request this, you can ignore this email.`,
+  });
+}
+
+export async function sendClinicCodeEmail({ to, code, expiresAtIso }) {
+  const transporter = getMailer();
+  const from = (process.env.FROM_EMAIL || process.env.SMTP_USER || "").trim();
+  if (!from) throw new Error("FROM_EMAIL not set");
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: "Your GenZipher clinic verification code",
+    text: `Your clinic verification code is: ${code}\n\nIt expires at: ${expiresAtIso}\n\nIf you did not request this, you can ignore this email.`,
+  });
+}

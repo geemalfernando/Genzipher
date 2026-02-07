@@ -15,6 +15,8 @@ import { PatientKey } from "./db/models/PatientKey.js";
 import { PatientProfile } from "./db/models/PatientProfile.js";
 import { ClinicCode } from "./db/models/ClinicCode.js";
 import { RegistrationAttempt } from "./db/models/RegistrationAttempt.js";
+import { OtpRequest } from "./db/models/OtpRequest.js";
+import { TrustedDevice } from "./db/models/TrustedDevice.js";
 import { Prescription } from "./db/models/Prescription.js";
 import { Batch } from "./db/models/Batch.js";
 import { Dispense } from "./db/models/Dispense.js";
@@ -30,15 +32,21 @@ import {
   sha256Base64url,
   signObjectEd25519,
   verifyObjectEd25519,
+  verifyObjectEs256,
 } from "./lib/crypto.js";
 import { jwtSignHs256, jwtVerifyHs256 } from "./lib/jwt.js";
 import { computeAuditHash } from "./lib/audit.js";
+import { isSmtpEnabled, sendClinicCodeEmail, sendOtpEmail, verifySmtpConnection } from "./lib/mailer.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 const DEMO_MFA_CODE = process.env.DEMO_MFA_CODE || "123456";
 const MFA_REQUIRED_ROLES = new Set(["doctor", "pharmacy", "manufacturer", "admin"]);
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
+
+function asyncRoute(fn) {
+  return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+}
 
 function hmacTokenizePatientId(patientUserId) {
   const h = crypto.createHmac("sha256", JWT_SECRET);
@@ -48,6 +56,28 @@ function hmacTokenizePatientId(patientUserId) {
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function looksLikeEmail(value) {
+  if (!isNonEmptyString(value)) return false;
+  const s = value.trim();
+  if (s.length > 254) return false;
+  // MVP-grade validation (avoid rejecting valid but uncommon addresses).
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+}
+
+function looksLikeUsername(value) {
+  if (!isNonEmptyString(value)) return false;
+  const s = value.trim();
+  if (s.length < 3 || s.length > 32) return false;
+  return /^[a-zA-Z0-9_.-]+$/.test(s);
+}
+
+function looksLikePassword(value) {
+  if (!isNonEmptyString(value)) return false;
+  const s = String(value);
+  if (s.length < 8 || s.length > 128) return false;
+  return true;
 }
 
 function safeNumber(value) {
@@ -158,6 +188,8 @@ async function ensureIndexes() {
     PatientProfile.init(),
     ClinicCode.init(),
     RegistrationAttempt.init(),
+    OtpRequest.init(),
+    TrustedDevice.init(),
     Prescription.init(),
     Batch.init(),
     Dispense.init(),
@@ -165,6 +197,102 @@ async function ensureIndexes() {
     AuditMeta.init(),
     AuditEntry.init(),
   ]);
+}
+
+function generateOtp6() {
+  return String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+}
+
+function hashOtp(otp) {
+  return sha256Base64url(`otp:${otp}:${JWT_SECRET}`);
+}
+
+async function verifyOtpRequest({ otpRequestId, otp, expectedPurpose }) {
+  const request = await OtpRequest.findOne({ id: otpRequestId }).lean();
+  if (!request) return { ok: false, status: 404, body: { error: "otp_request_not_found" } };
+  if (expectedPurpose && request.purpose !== expectedPurpose) {
+    return { ok: false, status: 400, body: { error: "otp_wrong_purpose", purpose: request.purpose } };
+  }
+  if (request.used) return { ok: false, status: 409, body: { error: "otp_already_used" } };
+  if (request.expiresAt.getTime() < Date.now()) return { ok: false, status: 401, body: { error: "otp_expired" } };
+  if (request.attempts >= 5) return { ok: false, status: 429, body: { error: "otp_attempts_exceeded" } };
+
+  const matches = hashOtp(otp) === request.otpHash;
+  if (!matches) {
+    const nextAttempts = (request.attempts || 0) + 1;
+    await OtpRequest.updateOne({ id: otpRequestId }, { $inc: { attempts: 1 } });
+    await auditAppend({
+      actor: { userId: request.userId },
+      action: "auth.otp_verify_failed",
+      details: { otpRequestId, purpose: request.purpose },
+    });
+    if (nextAttempts === 3) {
+      await auditAppend({
+        actor: { userId: request.userId },
+        action: "anomaly.otp_failed_multiple",
+        details: { otpRequestId, purpose: request.purpose, attempts: nextAttempts },
+      });
+    }
+    return { ok: false, status: 401, body: { error: "invalid_otp" } };
+  }
+
+  await OtpRequest.updateOne({ id: otpRequestId }, { $set: { used: true }, $inc: { attempts: 1 } });
+  return { ok: true, request };
+}
+
+function hashRememberToken(token) {
+  return sha256Base64url(`remember:${token}:${JWT_SECRET}`);
+}
+
+function looksLikeDeviceId(value) {
+  if (!isNonEmptyString(value)) return false;
+  const s = value.trim();
+  if (s.length < 8 || s.length > 128) return false;
+  return /^[a-zA-Z0-9_.:-]+$/.test(s);
+}
+
+async function issueOtpRequest({ user, purpose, context = null }) {
+  const otp = generateOtp6();
+  const otpRequestId = randomId("otp");
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+  const sentTo = user.email || `${user.username}@demo.local`;
+
+  await OtpRequest.create({
+    id: otpRequestId,
+    userId: user.id,
+    purpose,
+    otpHash: hashOtp(otp),
+    expiresAt,
+    attempts: 0,
+    used: false,
+    sentTo,
+    lastSentAt: new Date(),
+    context,
+  });
+
+  if (isSmtpEnabled()) {
+    if (!user.email || user.email.endsWith("@demo.local") || !looksLikeEmail(user.email)) {
+      throw new Error("mfa_email_missing");
+    }
+    await sendOtpEmail({ to: user.email, otp, expiresAtIso: expiresAt.toISOString() });
+    // eslint-disable-next-line no-console
+    console.log(`[OTP] SENT user=${user.username} sentTo=${user.email} expiresAt=${expiresAt.toISOString()}`);
+  } else {
+    // Fallback delivery for local demo.
+    // eslint-disable-next-line no-console
+    console.log(`[OTP] user=${user.username} sentTo=${sentTo} otp=${otp} expiresAt=${expiresAt.toISOString()}`);
+  }
+
+  return {
+    otpRequestId,
+    expiresAt: expiresAt.toISOString(),
+    sentTo,
+    delivery: isSmtpEnabled() ? "email" : "console",
+  };
+}
+
+async function issueLoginOtp({ user }) {
+  return issueOtpRequest({ user, purpose: "LOGIN" });
 }
 
 async function start() {
@@ -217,21 +345,29 @@ async function start() {
   // Friendly aliases / SPA-style paths
   app.get(["/home", "/home/"], (req, res) => res.redirect(302, "/"));
 
-  app.get("/health", async (req, res) => {
+  app.get("/health", asyncRoute(async (req, res) => {
     res.json({ ok: true, ts: nowIso() });
-  });
+  }));
 
   // --- Auth ---
-  app.post("/auth/login", async (req, res) => {
-    const { username, password, mfaCode } = req.body || {};
-    if (!isNonEmptyString(username) || !isNonEmptyString(password)) {
-      return res.status(400).json({ error: "bad_request", message: "username/password required" });
+  app.post("/auth/login", asyncRoute(async (req, res) => {
+    const { username, email, identifier, password, mfaCode } = req.body || {};
+    const deviceId = req.body?.deviceId;
+    const rememberToken = req.body?.rememberToken;
+    const idRaw = identifier || email || username;
+    const id = isNonEmptyString(idRaw) ? String(idRaw).trim() : "";
+    const pwd = isNonEmptyString(password) ? String(password) : "";
+    const mfa = isNonEmptyString(mfaCode) ? String(mfaCode).trim() : "";
+    if (!isNonEmptyString(id) || !isNonEmptyString(pwd)) {
+      return res.status(400).json({ error: "bad_request", message: "identifier + password required" });
     }
 
-    const user = await User.findOne({ username }).lean();
-    if (!user || user.password !== password || user.status !== "active") {
+    const user = await User.findOne({
+      $or: [{ username: id }, { email: id }],
+    }).lean();
+    if (!user || user.password !== pwd || user.status !== "active") {
       await auditAppend({
-        actor: { username },
+        actor: { identifier: id },
         action: "auth.login_failed",
         details: { reason: "bad_credentials_or_inactive" },
       });
@@ -250,8 +386,69 @@ async function start() {
       }
     }
 
-    if (MFA_REQUIRED_ROLES.has(user.role) && mfaCode !== DEMO_MFA_CODE) {
-      return res.status(401).json({ error: "mfa_required_or_invalid" });
+    if (user.mfaEnabled && user.mfaMethod === "EMAIL_OTP") {
+      // If the user previously trusted this browser/device, allow password-only login.
+      if (looksLikeDeviceId(deviceId) && isNonEmptyString(rememberToken)) {
+        const trusted = await TrustedDevice.findOne({
+          userId: user.id,
+          deviceId: String(deviceId).trim(),
+          revokedAt: null,
+        }).lean();
+        if (trusted && trusted.expiresAt.getTime() > Date.now() && trusted.tokenHash === hashRememberToken(String(rememberToken).trim())) {
+          await TrustedDevice.updateOne(
+            { id: trusted.id },
+            { $set: { lastUsedAt: new Date() } }
+          );
+          const token = jwtSignHs256({
+            payload: { sub: user.id, role: user.role, username: user.username },
+            secret: JWT_SECRET,
+            expiresInSeconds: 15 * 60,
+          });
+          await auditAppend({
+            actor: { userId: user.id, role: user.role, username: user.username },
+            action: "auth.mfa_bypassed_trusted_device",
+            details: { deviceId: String(deviceId).trim() },
+          });
+          return res.status(200).json({ token, role: user.role, userId: user.id, mfaBypassed: true });
+        }
+      }
+
+      let otpInfo;
+      try {
+        otpInfo = await issueLoginOtp({ user });
+      } catch (err) {
+        if (String(err?.message || err) === "mfa_email_missing") {
+          return res.status(400).json({
+            error: "mfa_email_missing",
+            message: "Set a real email for this patient before using Email OTP MFA.",
+          });
+        }
+        // eslint-disable-next-line no-console
+        console.error(err);
+        return res.status(500).json({ error: "otp_send_failed" });
+      }
+      await auditAppend({
+        actor: { userId: user.id, role: user.role, username: user.username },
+        action: "auth.otp_issued",
+        details: { otpRequestId: otpInfo.otpRequestId, purpose: "LOGIN", expiresAt: otpInfo.expiresAt, sentTo: otpInfo.sentTo, delivery: otpInfo.delivery },
+      });
+      return res.status(200).json({
+        mfaRequired: true,
+        method: "EMAIL_OTP",
+        otpRequestId: otpInfo.otpRequestId,
+        userId: user.id,
+        username: user.username,
+        expiresAt: otpInfo.expiresAt,
+        sentTo: otpInfo.sentTo,
+        delivery: otpInfo.delivery,
+      });
+    }
+
+    if (MFA_REQUIRED_ROLES.has(user.role) && mfa !== DEMO_MFA_CODE) {
+      return res.status(401).json({
+        error: "mfa_required_or_invalid",
+        message: "Enter the demo MFA code for this role.",
+      });
     }
 
     const token = jwtSignHs256({
@@ -267,18 +464,224 @@ async function start() {
     });
 
     return res.json({ token, role: user.role, userId: user.id });
-  });
+  }));
+
+  app.post("/auth/verify-otp", asyncRoute(async (req, res) => {
+    const { otpRequestId, otp, rememberDevice, deviceId } = req.body || {};
+    if (!isNonEmptyString(otpRequestId) || !isNonEmptyString(otp)) {
+      return res.status(400).json({ error: "bad_request", message: "otpRequestId + otp required" });
+    }
+
+    const verified = await verifyOtpRequest({ otpRequestId, otp, expectedPurpose: "LOGIN" });
+    if (!verified.ok) return res.status(verified.status).json(verified.body);
+
+    const user = await User.findOne({ id: verified.request.userId }).lean();
+    if (!user || user.status !== "active") return res.status(401).json({ error: "invalid_user" });
+
+    const token = jwtSignHs256({
+      payload: { sub: user.id, role: user.role, username: user.username },
+      secret: JWT_SECRET,
+      expiresInSeconds: 15 * 60,
+    });
+
+    let rememberOut = null;
+    if (rememberDevice && looksLikeDeviceId(deviceId) && user.mfaEnabled && user.mfaMethod === "EMAIL_OTP") {
+      const raw = crypto.randomBytes(32).toString("base64url");
+      const trustedId = randomId("trusted");
+      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      await TrustedDevice.updateOne(
+        { userId: user.id, deviceId: String(deviceId).trim() },
+        {
+          $set: {
+            id: trustedId,
+            userId: user.id,
+            deviceId: String(deviceId).trim(),
+            tokenHash: hashRememberToken(raw),
+            expiresAt,
+            revokedAt: null,
+            lastUsedAt: new Date(),
+          },
+        },
+        { upsert: true }
+      );
+      rememberOut = { rememberToken: raw, deviceId: String(deviceId).trim(), expiresAt: expiresAt.toISOString() };
+      await auditAppend({
+        actor: { userId: user.id, role: user.role, username: user.username },
+        action: "auth.trusted_device_added",
+        details: { deviceId: String(deviceId).trim(), expiresAt: expiresAt.toISOString() },
+      });
+    }
+
+    await auditAppend({
+      actor: { userId: user.id, role: user.role, username: user.username },
+      action: "auth.otp_verified",
+      details: { otpRequestId, purpose: verified.request.purpose },
+    });
+
+    return res.json({ token, role: user.role, userId: user.id, ...(rememberOut ? rememberOut : {}) });
+  }));
+
+  // Trusted devices: list + remove (removal requires email OTP)
+  app.get("/auth/trusted-devices", requireAuth, asyncRoute(async (req, res) => {
+    const devices = await TrustedDevice.find(
+      { userId: req.auth.sub, revokedAt: null, expiresAt: { $gt: new Date() } },
+      { _id: 0, __v: 0, tokenHash: 0 }
+    )
+      .sort({ lastUsedAt: -1, createdAt: -1 })
+      .lean();
+    res.json({ count: devices.length, devices });
+  }));
+
+  app.post("/auth/trusted-devices/remove/request", requireAuth, asyncRoute(async (req, res) => {
+    const { deviceId } = req.body || {};
+    if (!looksLikeDeviceId(deviceId)) return res.status(400).json({ error: "bad_request", message: "deviceId required" });
+
+    const device = await TrustedDevice.findOne({ userId: req.auth.sub, deviceId: String(deviceId).trim(), revokedAt: null }).lean();
+    if (!device) return res.status(404).json({ error: "trusted_device_not_found" });
+
+    const user = await User.findOne({ id: req.auth.sub }).lean();
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+    if (!looksLikeEmail(user.email) || String(user.email).endsWith("@demo.local")) {
+      return res.status(400).json({ error: "mfa_email_missing", message: "Set a real email on your account before removing devices." });
+    }
+
+    let otpInfo;
+    try {
+      otpInfo = await issueOtpRequest({
+        user,
+        purpose: "DEVICE_REMOVE",
+        context: { deviceId: String(deviceId).trim() },
+      });
+    } catch (err) {
+      if (String(err?.message || err) === "mfa_email_missing") return res.status(400).json({ error: "mfa_email_missing" });
+      // eslint-disable-next-line no-console
+      console.error(err);
+      return res.status(500).json({ error: "otp_send_failed" });
+    }
+
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "auth.trusted_device_remove_requested",
+      details: { deviceId: String(deviceId).trim(), otpRequestId: otpInfo.otpRequestId, delivery: otpInfo.delivery },
+    });
+
+    res.json({
+      ok: true,
+      otpRequestId: otpInfo.otpRequestId,
+      expiresAt: otpInfo.expiresAt,
+      sentTo: otpInfo.sentTo,
+      delivery: otpInfo.delivery,
+    });
+  }));
+
+  app.post("/auth/trusted-devices/remove/confirm", requireAuth, asyncRoute(async (req, res) => {
+    const { otpRequestId, otp } = req.body || {};
+    if (!isNonEmptyString(otpRequestId) || !isNonEmptyString(otp)) {
+      return res.status(400).json({ error: "bad_request", message: "otpRequestId + otp required" });
+    }
+    const verified = await verifyOtpRequest({ otpRequestId, otp, expectedPurpose: "DEVICE_REMOVE" });
+    if (!verified.ok) return res.status(verified.status).json(verified.body);
+    if (verified.request.userId !== req.auth.sub) return res.status(403).json({ error: "forbidden" });
+
+    const ctxDeviceId = verified.request.context?.deviceId;
+    if (!looksLikeDeviceId(ctxDeviceId)) return res.status(400).json({ error: "bad_request", message: "invalid request context" });
+
+    await TrustedDevice.updateOne(
+      { userId: req.auth.sub, deviceId: String(ctxDeviceId).trim(), revokedAt: null },
+      { $set: { revokedAt: new Date() } }
+    );
+
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "auth.trusted_device_revoked",
+      details: { deviceId: String(ctxDeviceId).trim(), via: "email_otp" },
+    });
+
+    res.json({ ok: true, deviceId: String(ctxDeviceId).trim() });
+  }));
+
+  // Deprecated: kept to avoid breaking old UI. Use the flows above.
+  app.post("/auth/forget-device", requireAuth, asyncRoute(async (req, res) => {
+    return res.status(410).json({ error: "deprecated", message: "Use /auth/trusted-devices/remove/request and /confirm (email verification required)." });
+  }));
+
+  app.post("/auth/resend-otp", asyncRoute(async (req, res) => {
+    const { otpRequestId } = req.body || {};
+    if (!isNonEmptyString(otpRequestId)) {
+      return res.status(400).json({ error: "bad_request", message: "otpRequestId required" });
+    }
+    const request = await OtpRequest.findOne({ id: otpRequestId }).lean();
+    if (!request) return res.status(404).json({ error: "otp_request_not_found" });
+    if (request.used) return res.status(409).json({ error: "otp_already_used" });
+    if (request.expiresAt.getTime() < Date.now()) return res.status(401).json({ error: "otp_expired" });
+
+    const cooldownMs = 60 * 1000;
+    const nextAllowedAt = new Date(request.lastSentAt.getTime() + cooldownMs);
+    if (Date.now() < nextAllowedAt.getTime()) {
+      const cooldownSeconds = Math.ceil((nextAllowedAt.getTime() - Date.now()) / 1000);
+      return res.status(429).json({ error: "cooldown", cooldownSeconds });
+    }
+
+    const user = await User.findOne({ id: request.userId }).lean();
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+
+    const otp = generateOtp6();
+    await OtpRequest.updateOne(
+      { id: otpRequestId },
+      { $set: { otpHash: hashOtp(otp), lastSentAt: new Date() } }
+    );
+
+    const sentTo = user.email || `${user.username}@demo.local`;
+    if (isSmtpEnabled()) {
+      if (!user.email || user.email.endsWith("@demo.local")) {
+        return res.status(400).json({ error: "mfa_email_missing" });
+      }
+      try {
+        await sendOtpEmail({ to: user.email, otp, expiresAtIso: request.expiresAt.toISOString() });
+        // eslint-disable-next-line no-console
+        console.log(`[OTP] RESEND SENT user=${user.username} sentTo=${user.email} expiresAt=${request.expiresAt.toISOString()}`);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(err);
+        return res.status(500).json({ error: "otp_send_failed" });
+      }
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(`[OTP] RESEND user=${user.username} sentTo=${sentTo} otp=${otp} expiresAt=${request.expiresAt.toISOString()}`);
+    }
+
+    await auditAppend({
+      actor: { userId: user.id, role: user.role, username: user.username },
+      action: "auth.otp_resent",
+      details: { otpRequestId, sentTo, delivery: isSmtpEnabled() ? "email" : "console" },
+    });
+
+    return res.json({ resent: true, cooldownSeconds: 60, delivery: isSmtpEnabled() ? "email" : "console", sentTo });
+  }));
 
   // --- Patient registration + strong verification (clinic code) ---
-  app.post("/patients/pre-register", async (req, res) => {
-    const { username, password, geo, deviceId } = req.body || {};
-    if (!isNonEmptyString(username) || !isNonEmptyString(password)) {
-      return res.status(400).json({ error: "bad_request", message: "username/password required" });
+  app.post("/patients/pre-register", asyncRoute(async (req, res) => {
+    const { username, password, geo, deviceId, email } = req.body || {};
+    if (!looksLikeUsername(username) || !looksLikePassword(password)) {
+      return res.status(400).json({
+        error: "bad_request",
+        message: "username (3-32 chars, letters/numbers/._-) and password (min 8 chars) required",
+      });
+    }
+    if (email && !looksLikeEmail(email)) {
+      return res.status(400).json({ error: "bad_request", message: "invalid email" });
     }
 
     const ip = getClientIp(req);
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const ipReuseCount = await RegistrationAttempt.countDocuments({ ip, ts: { $gte: since } });
+    if (ipReuseCount >= 25) {
+      await auditAppend({
+        actor: { username, role: "patient" },
+        action: "anomaly.registration_burst",
+        details: { ipReuseCount, ip },
+      });
+    }
 
     const existing = await User.findOne({ username }).lean();
     if (existing) return res.status(409).json({ error: "username_taken" });
@@ -300,6 +703,9 @@ async function start() {
       role: "patient",
       password,
       status: "active",
+      email: looksLikeEmail(email) ? String(email).trim().toLowerCase() : `${username}@demo.local`,
+      mfaEnabled: false,
+      mfaMethod: "NONE",
     });
     await PatientProfile.create({
       patientId,
@@ -322,18 +728,19 @@ async function start() {
       trustExplainTop3: top3,
       next: score >= 80 ? "login" : "verify_clinic_code",
     });
-  });
+  }));
 
-  app.get("/patients/me/profile", requireAuth, requireRole(["patient"]), async (req, res) => {
+  app.get("/patients/me/profile", requireAuth, requireRole(["patient"]), asyncRoute(async (req, res) => {
     const profile = await PatientProfile.findOne({ patientId: req.auth.sub }, { _id: 0, __v: 0 }).lean();
     if (!profile) return res.status(404).json({ error: "patient_profile_missing" });
     const patientToken = hmacTokenizePatientId(req.auth.sub);
-    res.json({ profile, patientToken });
-  });
+    const user = await User.findOne({ id: req.auth.sub }, { _id: 0, id: 1, username: 1, email: 1, mfaEnabled: 1, mfaMethod: 1 }).lean();
+    res.json({ profile, patientToken, user });
+  }));
 
   // Admin generates 1-time clinic code (expires in 10 minutes by default)
-  app.post("/clinic/codes", requireAuth, requireRole(["admin"]), async (req, res) => {
-    const { patientId, expiresMinutes } = req.body || {};
+  app.post("/clinic/codes", requireAuth, requireRole(["admin"]), asyncRoute(async (req, res) => {
+    const { patientId, expiresMinutes, sendEmail } = req.body || {};
     const mins = safeNumber(expiresMinutes) ?? 10;
     const code = crypto.randomBytes(4).toString("hex").toUpperCase(); // 8 chars
     const codeHash = sha256Base64url(`clinic:${code}:${JWT_SECRET}`);
@@ -345,28 +752,145 @@ async function start() {
       usedAt: null,
       usedByPatientId: null,
     });
+
+    let delivery = "console";
+    let sentTo = null;
+    if (sendEmail) {
+      if (!isSmtpEnabled()) {
+        return res.status(400).json({ error: "smtp_not_configured" });
+      }
+      const verify = await verifySmtpConnection();
+      if (!verify.ok) return res.status(400).json({ error: verify.error, detail: verify.detail });
+      if (!isNonEmptyString(patientId)) {
+        return res.status(400).json({ error: "patientId_required_for_email" });
+      }
+      const patientUser = await User.findOne({ id: patientId, role: "patient" }).lean();
+      if (!patientUser) return res.status(404).json({ error: "patient_not_found" });
+      if (!looksLikeEmail(patientUser.email) || String(patientUser.email).endsWith("@demo.local")) {
+        return res.status(400).json({ error: "patient_email_missing" });
+      }
+      try {
+        await sendClinicCodeEmail({
+          to: patientUser.email,
+          code,
+          expiresAtIso: expiresAt.toISOString(),
+        });
+        delivery = "email";
+        sentTo = patientUser.email;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(err);
+        return res.status(500).json({
+          error: "email_send_failed",
+          detail: {
+            name: err?.name,
+            code: err?.code,
+            message: err?.message,
+            responseCode: err?.responseCode,
+            response: err?.response,
+            command: err?.command,
+          },
+        });
+      }
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(`[CLINIC_CODE] patientId=${isNonEmptyString(patientId) ? patientId : "unbound"} code=${code} expiresAt=${expiresAt.toISOString()}`);
+    }
+
     await auditAppend({
       actor: { userId: req.auth.sub, role: req.auth.role },
       action: "clinic.code_issued",
-      details: { patientId: isNonEmptyString(patientId) ? patientId : null, expiresAt: expiresAt.toISOString() },
+      details: {
+        patientId: isNonEmptyString(patientId) ? patientId : null,
+        expiresAt: expiresAt.toISOString(),
+        delivery,
+        sentTo,
+      },
     });
-    return res.status(201).json({ code, expiresAt: expiresAt.toISOString(), boundPatientId: isNonEmptyString(patientId) ? patientId : null });
-  });
 
-  app.post("/patients/verify-clinic-code", async (req, res) => {
+    // For demo: still return the code even if emailed (fallback).
+    return res.status(201).json({
+      code,
+      delivery,
+      sentTo,
+      expiresAt: expiresAt.toISOString(),
+      boundPatientId: isNonEmptyString(patientId) ? patientId : null,
+    });
+  }));
+
+  // Admin: list patients with profiles for dashboard workflows
+  app.get("/admin/patients", requireAuth, requireRole(["admin"]), asyncRoute(async (req, res) => {
+    const status = isNonEmptyString(req.query?.status) ? String(req.query.status) : null;
+    const filter = status ? { status } : {};
+    const profiles = await PatientProfile.find(filter, { _id: 0, patientId: 1, status: 1, trustScore: 1, trustExplainTop3: 1, createdAt: 1 }).sort({ createdAt: -1 }).limit(200).lean();
+    const patientIds = profiles.map((p) => p.patientId);
+    const users = await User.find({ id: { $in: patientIds }, role: "patient" }, { _id: 0, id: 1, username: 1, email: 1, status: 1 }).lean();
+    const userById = new Map(users.map((u) => [u.id, u]));
+    const out = profiles.map((p) => ({ ...p, user: userById.get(p.patientId) || null }));
+    res.json({ count: out.length, patients: out });
+  }));
+
+  // Admin: send a test email to confirm SMTP works
+  app.post("/admin/mail/test", requireAuth, requireRole(["admin"]), asyncRoute(async (req, res) => {
+    const { to } = req.body || {};
+    if (!looksLikeEmail(to)) return res.status(400).json({ error: "bad_request", message: "valid 'to' email required" });
+    if (!isSmtpEnabled()) return res.status(400).json({ error: "smtp_not_configured" });
+    const verify = await verifySmtpConnection();
+    if (!verify.ok) return res.status(400).json({ error: verify.error, detail: verify.detail });
+    try {
+      await sendOtpEmail({ to, otp: "000000", expiresAtIso: new Date(Date.now() + 5 * 60 * 1000).toISOString() });
+      await auditAppend({
+        actor: { userId: req.auth.sub, role: req.auth.role },
+        action: "admin.mail_test_sent",
+        details: { to },
+      });
+      return res.json({ ok: true });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(err);
+      return res.status(500).json({
+        error: "email_send_failed",
+        detail: {
+          name: err?.name,
+          code: err?.code,
+          message: err?.message,
+          responseCode: err?.responseCode,
+          response: err?.response,
+          command: err?.command,
+        },
+      });
+    }
+  }));
+
+  // Admin: check SMTP connectivity/auth without sending an email
+  app.get("/admin/mail/status", requireAuth, requireRole(["admin"]), asyncRoute(async (req, res) => {
+    if (!isSmtpEnabled()) return res.status(200).json({ ok: false, error: "smtp_not_configured" });
+    const verify = await verifySmtpConnection();
+    if (!verify.ok) return res.status(200).json({ ok: false, error: verify.error, detail: verify.detail });
+    return res.status(200).json({ ok: true });
+  }));
+
+  app.post("/patients/verify-clinic-code", asyncRoute(async (req, res) => {
     const { username, patientId, code } = req.body || {};
     if (!isNonEmptyString(code) || (!isNonEmptyString(username) && !isNonEmptyString(patientId))) {
       return res.status(400).json({ error: "bad_request", message: "code + (username or patientId) required" });
     }
+
+    const normalizedCode = String(code).trim().toUpperCase();
 
     const user = isNonEmptyString(patientId)
       ? await User.findOne({ id: patientId, role: "patient" }).lean()
       : await User.findOne({ username, role: "patient" }).lean();
     if (!user) return res.status(404).json({ error: "patient_not_found" });
 
-    const codeHash = sha256Base64url(`clinic:${code}:${JWT_SECRET}`);
+    const codeHash = sha256Base64url(`clinic:${normalizedCode}:${JWT_SECRET}`);
     const record = await ClinicCode.findOne({ codeHash }).lean();
-    if (!record) return res.status(401).json({ error: "invalid_code" });
+    if (!record) {
+      return res.status(401).json({
+        error: "invalid_code",
+        hint: "Check code case (use uppercase) and ensure JWT_SECRET was not changed after issuing the code.",
+      });
+    }
     if (record.usedAt) return res.status(409).json({ error: "code_already_used" });
     if (record.expiresAt.getTime() < Date.now()) return res.status(401).json({ error: "code_expired" });
     if (record.patientId && record.patientId !== user.id) return res.status(403).json({ error: "code_not_for_patient" });
@@ -397,10 +921,10 @@ async function start() {
     });
 
     return res.json({ ok: true, patientId: user.id, status: "VERIFIED", trustScore: Math.max(profile.trustScore, score), trustExplainTop3: top3, next: "login" });
-  });
+  }));
 
   // After verification, patient can provision DID + data key
-  app.post("/patients/issue-did", requireAuth, requireRole(["patient"]), async (req, res) => {
+  app.post("/patients/issue-did", requireAuth, requireRole(["patient"]), asyncRoute(async (req, res) => {
     const profile = await PatientProfile.findOne({ patientId: req.auth.sub }).lean();
     if (!profile) return res.status(500).json({ error: "patient_profile_missing" });
     if (profile.did) return res.json({ did: profile.did });
@@ -412,9 +936,91 @@ async function start() {
       details: { did },
     });
     return res.status(201).json({ did });
-  });
+  }));
 
-  app.post("/patients/provision-data-key", requireAuth, requireRole(["patient"]), async (req, res) => {
+  app.post("/patients/enable-mfa", requireAuth, requireRole(["patient"]), asyncRoute(async (req, res) => {
+    const { method, email } = req.body || {};
+    const m = isNonEmptyString(method) ? String(method) : "EMAIL_OTP";
+    if (m !== "EMAIL_OTP") return res.status(400).json({ error: "unsupported_mfa_method" });
+    if (email && !isNonEmptyString(email)) return res.status(400).json({ error: "bad_request", message: "email must be a string" });
+    if (email && !looksLikeEmail(email)) return res.status(400).json({ error: "bad_request", message: "invalid email" });
+
+    const profile = await PatientProfile.findOne({ patientId: req.auth.sub }).lean();
+    if (!profile || (profile.status !== "ACTIVE" && profile.status !== "VERIFIED")) {
+      return res.status(403).json({ error: "patient_not_verified" });
+    }
+
+    if (isSmtpEnabled()) {
+      const existingUser = await User.findOne({ id: req.auth.sub }).lean();
+      const effectiveEmail = looksLikeEmail(email)
+        ? String(email).trim().toLowerCase()
+        : existingUser?.email;
+      if (!looksLikeEmail(effectiveEmail) || String(effectiveEmail).endsWith("@demo.local")) {
+        return res.status(400).json({
+          error: "mfa_email_missing",
+          message: "Provide a real email address to enable Email OTP MFA when SMTP is enabled.",
+        });
+      }
+    }
+
+    const update = { mfaEnabled: true, mfaMethod: "EMAIL_OTP" };
+    if (isNonEmptyString(email)) update.email = String(email).trim().toLowerCase();
+    await User.updateOne({ id: req.auth.sub }, { $set: update });
+
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "patient.mfa_enabled",
+      details: { method: "EMAIL_OTP", emailUpdated: Boolean(update.email) },
+    });
+
+    return res.json({ ok: true, method: "EMAIL_OTP" });
+  }));
+
+  // Disable MFA requires email OTP confirmation
+  app.post("/patients/disable-mfa/request", requireAuth, requireRole(["patient"]), asyncRoute(async (req, res) => {
+    const user = await User.findOne({ id: req.auth.sub }).lean();
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+    if (!user.mfaEnabled || user.mfaMethod !== "EMAIL_OTP") {
+      return res.status(409).json({ error: "mfa_not_enabled" });
+    }
+    if (!looksLikeEmail(user.email) || String(user.email).endsWith("@demo.local")) {
+      return res.status(400).json({ error: "mfa_email_missing" });
+    }
+    let otpInfo;
+    try {
+      otpInfo = await issueOtpRequest({ user, purpose: "MFA_DISABLE", context: { userId: user.id } });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(err);
+      return res.status(500).json({ error: "otp_send_failed" });
+    }
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "patient.mfa_disable_requested",
+      details: { otpRequestId: otpInfo.otpRequestId, delivery: otpInfo.delivery },
+    });
+    return res.json({ ok: true, otpRequestId: otpInfo.otpRequestId, expiresAt: otpInfo.expiresAt, sentTo: otpInfo.sentTo, delivery: otpInfo.delivery });
+  }));
+
+  app.post("/patients/disable-mfa/confirm", requireAuth, requireRole(["patient"]), asyncRoute(async (req, res) => {
+    const { otpRequestId, otp } = req.body || {};
+    if (!isNonEmptyString(otpRequestId) || !isNonEmptyString(otp)) {
+      return res.status(400).json({ error: "bad_request", message: "otpRequestId + otp required" });
+    }
+    const verified = await verifyOtpRequest({ otpRequestId, otp, expectedPurpose: "MFA_DISABLE" });
+    if (!verified.ok) return res.status(verified.status).json(verified.body);
+    if (verified.request.userId !== req.auth.sub) return res.status(403).json({ error: "forbidden" });
+
+    await User.updateOne({ id: req.auth.sub }, { $set: { mfaEnabled: false, mfaMethod: "NONE" } });
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "patient.mfa_disabled",
+      details: {},
+    });
+    return res.json({ ok: true });
+  }));
+
+  app.post("/patients/provision-data-key", requireAuth, requireRole(["patient"]), asyncRoute(async (req, res) => {
     const patientToken = hmacTokenizePatientId(req.auth.sub);
     const existing = await PatientKey.findOne({ patientToken }).lean();
     if (existing) return res.json({ ok: true, patientToken });
@@ -426,13 +1032,17 @@ async function start() {
       details: { patientToken },
     });
     return res.status(201).json({ ok: true, patientToken });
-  });
+  }));
 
   // --- Devices (device binding) ---
   const bindDeviceHandler = async (req, res) => {
-    const { deviceId, publicKeyPem, fingerprintHash } = req.body || {};
+    const { deviceId, publicKeyPem, fingerprintHash, keyAlg } = req.body || {};
     if (!isNonEmptyString(deviceId) || !isNonEmptyString(publicKeyPem)) {
       return res.status(400).json({ error: "bad_request", message: "deviceId/publicKeyPem required" });
+    }
+    const alg = isNonEmptyString(keyAlg) ? String(keyAlg) : "Ed25519";
+    if (alg !== "Ed25519" && alg !== "ES256") {
+      return res.status(400).json({ error: "bad_request", message: "keyAlg must be Ed25519 or ES256" });
     }
     const patientToken = hmacTokenizePatientId(req.auth.sub);
 
@@ -443,6 +1053,7 @@ async function start() {
     await Device.create({
       deviceId,
       patientToken,
+      keyAlg: alg,
       publicKeyPem,
       fingerprintHash: isNonEmptyString(fingerprintHash) ? fingerprintHash : null,
       status: "pending",
@@ -466,10 +1077,10 @@ async function start() {
     });
   };
 
-  app.post("/patients/bind-device", requireAuth, requireRole(["patient"]), bindDeviceHandler);
+  app.post("/patients/bind-device", requireAuth, requireRole(["patient"]), asyncRoute(bindDeviceHandler));
   app.post("/devices/register", requireAuth, requireRole(["patient"]), bindDeviceHandler);
 
-  app.post("/auth/device-challenge", requireAuth, requireRole(["patient"]), async (req, res) => {
+  app.post("/auth/device-challenge", requireAuth, requireRole(["patient"]), asyncRoute(async (req, res) => {
     const { deviceId } = req.body || {};
     if (!isNonEmptyString(deviceId)) return res.status(400).json({ error: "bad_request", message: "deviceId required" });
     const patientToken = hmacTokenizePatientId(req.auth.sub);
@@ -479,9 +1090,9 @@ async function start() {
     const nonce = randomId("chal");
     await Device.updateOne({ deviceId }, { $set: { challengeNonce: nonce, challengeIssuedAt: new Date() } });
     return res.json({ ok: true, challenge: { deviceId, nonce } });
-  });
+  }));
 
-  app.post("/auth/device-verify", requireAuth, requireRole(["patient"]), async (req, res) => {
+  app.post("/auth/device-verify", requireAuth, requireRole(["patient"]), asyncRoute(async (req, res) => {
     const { deviceId, signatureB64url } = req.body || {};
     if (!isNonEmptyString(deviceId) || !isNonEmptyString(signatureB64url)) {
       return res.status(400).json({ error: "bad_request", message: "deviceId/signatureB64url required" });
@@ -493,11 +1104,10 @@ async function start() {
     if (!device.challengeNonce) return res.status(409).json({ error: "no_active_challenge" });
 
     const challengePayload = { deviceId, nonce: device.challengeNonce };
-    const ok = verifyObjectEd25519({
-      obj: challengePayload,
-      signatureB64url,
-      publicKeyPem: device.publicKeyPem,
-    });
+    const ok =
+      device.keyAlg === "ES256"
+        ? verifyObjectEs256({ obj: challengePayload, signatureB64url, publicKeyPem: device.publicKeyPem })
+        : verifyObjectEd25519({ obj: challengePayload, signatureB64url, publicKeyPem: device.publicKeyPem });
     if (!ok) {
       await auditAppend({
         actor: { userId: req.auth.sub, role: req.auth.role },
@@ -519,10 +1129,10 @@ async function start() {
       details: { deviceId },
     });
     return res.json({ ok: true, deviceId, status: "active", patientStatus: "ACTIVE" });
-  });
+  }));
 
   // --- Vitals upload ---
-  app.post("/vitals/upload", requireAuth, requireRole(["patient"]), async (req, res) => {
+  app.post("/vitals/upload", requireAuth, requireRole(["patient"]), asyncRoute(async (req, res) => {
     const { deviceId, payload, signatureB64url } = req.body || {};
     if (!isNonEmptyString(deviceId) || !payload || !isNonEmptyString(signatureB64url)) {
       return res.status(400).json({ error: "bad_request", message: "deviceId/payload/signatureB64url required" });
@@ -532,7 +1142,10 @@ async function start() {
     const device = await Device.findOne({ deviceId, patientToken, status: "active" }).lean();
     if (!device) return res.status(403).json({ error: "device_not_bound" });
 
-    const ok = verifyObjectEd25519({ obj: payload, signatureB64url, publicKeyPem: device.publicKeyPem });
+    const ok =
+      device.keyAlg === "ES256"
+        ? verifyObjectEs256({ obj: payload, signatureB64url, publicKeyPem: device.publicKeyPem })
+        : verifyObjectEd25519({ obj: payload, signatureB64url, publicKeyPem: device.publicKeyPem });
     if (!ok) {
       await auditAppend({
         actor: { userId: req.auth.sub, role: req.auth.role },
@@ -562,10 +1175,10 @@ async function start() {
     });
 
     return res.status(201).json({ ok: true, recordId: record.id });
-  });
+  }));
 
   // --- Vitals read (doctor; ABAC + break-glass) ---
-  app.get("/vitals/:patientToken", requireAuth, requireRole(["doctor"]), async (req, res) => {
+  app.get("/vitals/:patientToken", requireAuth, requireRole(["doctor"]), asyncRoute(async (req, res) => {
     const patientToken = req.params.patientToken;
     const breakGlass = req.header("x-break-glass") === "true";
 
@@ -591,10 +1204,10 @@ async function start() {
     });
 
     return res.json({ patientToken, records: decrypted });
-  });
+  }));
 
   // --- Prescriptions ---
-  app.post("/prescriptions", requireAuth, requireRole(["doctor"]), async (req, res) => {
+  app.post("/prescriptions", requireAuth, requireRole(["doctor"]), asyncRoute(async (req, res) => {
     const { patientUserId, medicineId, dosage, durationDays } = req.body || {};
     const duration = safeNumber(durationDays);
     if (!isNonEmptyString(patientUserId) || !isNonEmptyString(medicineId) || !isNonEmptyString(dosage) || duration === null) {
@@ -641,9 +1254,9 @@ async function start() {
     });
 
     return res.status(201).json(rx);
-  });
+  }));
 
-  app.post("/prescriptions/verify", async (req, res) => {
+  app.post("/prescriptions/verify", asyncRoute(async (req, res) => {
     const rx = req.body?.prescription;
     if (!rx) return res.status(400).json({ error: "bad_request", message: "prescription required" });
 
@@ -667,10 +1280,10 @@ async function start() {
     const nonceReused = Boolean(nonceDoc && nonceDoc.id !== rx.id);
 
     return res.json({ ok: signatureOk && !expired && !nonceReused, checks: { signatureOk, expired, nonceReused } });
-  });
+  }));
 
   // --- Batches ---
-  app.post("/batches", requireAuth, requireRole(["manufacturer"]), async (req, res) => {
+  app.post("/batches", requireAuth, requireRole(["manufacturer"]), asyncRoute(async (req, res) => {
     const { batchId, lot, expiry, certificateHash } = req.body || {};
     if (!isNonEmptyString(batchId) || !isNonEmptyString(lot) || !isNonEmptyString(expiry) || !isNonEmptyString(certificateHash)) {
       return res.status(400).json({ error: "bad_request", message: "batchId/lot/expiry/certificateHash required" });
@@ -701,9 +1314,9 @@ async function start() {
     });
 
     return res.status(201).json(batch);
-  });
+  }));
 
-  app.post("/batches/verify", async (req, res) => {
+  app.post("/batches/verify", asyncRoute(async (req, res) => {
     const batch = req.body?.batch;
     if (!batch) return res.status(400).json({ error: "bad_request", message: "batch required" });
 
@@ -722,10 +1335,10 @@ async function start() {
     const expired = Date.parse(batch.expiry) < Date.now();
     const ok = signatureOk && !expired && batch.status === "valid";
     return res.json({ ok, checks: { signatureOk, expired, status: batch.status } });
-  });
+  }));
 
   // --- Dispense ---
-  app.post("/dispense", requireAuth, requireRole(["pharmacy"]), async (req, res) => {
+  app.post("/dispense", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
     const { prescription: rx, batch } = req.body || {};
     if (!rx || !batch) return res.status(400).json({ error: "bad_request", message: "prescription and batch required" });
 
@@ -785,17 +1398,26 @@ async function start() {
     });
 
     return res.status(allowed ? 200 : 409).json(record);
-  });
+  }));
 
   // --- Audit viewer ---
-  app.get("/audit/logs", requireAuth, requireRole(["admin"]), async (req, res) => {
-    const { patientId, patientToken, action } = req.query || {};
+  app.get("/audit/logs", requireAuth, requireRole(["admin"]), asyncRoute(async (req, res) => {
+    const { patientId, patientToken, action, userId, username } = req.query || {};
     const filter = {};
     if (isNonEmptyString(action)) filter.action = String(action);
+    if (isNonEmptyString(username)) filter["actor.username"] = String(username);
+    if (isNonEmptyString(userId)) {
+      filter.$or = [
+        { "actor.userId": String(userId) },
+        { "actor.patientId": String(userId) },
+      ];
+    }
     if (isNonEmptyString(patientId)) {
       // best-effort filter by patient token inside audit details
       const token = hmacTokenizePatientId(String(patientId));
+      const base = filter.$or || [];
       filter.$or = [
+        ...base,
         { "actor.userId": String(patientId) },
         { "actor.patientId": String(patientId) },
         { "details.patientToken": token },
@@ -806,24 +1428,33 @@ async function start() {
 
     const entries = await AuditEntry.find(filter).sort({ ts: -1 }).limit(200).lean();
     res.json({ count: entries.length, entries });
-  });
+  }));
 
   // --- Helpful demo data endpoints (read-only, authenticated) ---
-  app.get("/demo/whoami", requireAuth, async (req, res) => {
+  app.get("/demo/whoami", requireAuth, asyncRoute(async (req, res) => {
     res.json({ auth: req.auth });
-  });
+  }));
 
-  app.get("/demo/users", requireAuth, async (req, res) => {
+  app.get("/demo/users", requireAuth, asyncRoute(async (req, res) => {
     // Minimal exposure for demo UI
     const users = await User.find({}, { _id: 0, id: 1, username: 1, role: 1, status: 1 }).lean();
     res.json({ users });
-  });
+  }));
 
   // SPA fallback: serve the UI for unknown GET routes (e.g. /home/)
   app.get("*", (req, res, next) => {
     if (req.method !== "GET") return next();
     if (req.path.includes(".")) return next(); // likely a file
     return res.sendFile(path.join(publicDir, "index.html"));
+  });
+
+  // Error handler to avoid ERR_EMPTY_RESPONSE on async errors (Express 4)
+  // eslint-disable-next-line no-unused-vars
+  app.use((err, req, res, next) => {
+    // eslint-disable-next-line no-console
+    console.error(err);
+    if (res.headersSent) return;
+    res.status(500).json({ error: "internal_error" });
   });
 
   app.listen(PORT, () => {

@@ -47,6 +47,15 @@ export function verifyObjectEd25519({ obj, signatureB64url, publicKeyPem }) {
   return crypto.verify(null, message, publicKeyPem, signature);
 }
 
+export function verifyObjectEs256({ obj, signatureB64url, publicKeyPem }) {
+  const message = Buffer.from(stableStringify(obj));
+  const signature = Buffer.from(
+    signatureB64url.replaceAll("-", "+").replaceAll("_", "/"),
+    "base64"
+  );
+  return crypto.verify("sha256", message, publicKeyPem, signature);
+}
+
 export function aes256gcmEncrypt({ plaintext, keyB64 }) {
   const key = Buffer.from(keyB64, "base64");
   const iv = crypto.randomBytes(12);

@@ -15,6 +15,7 @@ import { AuditMeta } from "../src/db/models/AuditMeta.js";
 import { AuditEntry } from "../src/db/models/AuditEntry.js";
 import { ClinicCode } from "../src/db/models/ClinicCode.js";
 import { RegistrationAttempt } from "../src/db/models/RegistrationAttempt.js";
+import { OtpRequest } from "../src/db/models/OtpRequest.js";
 
 import { generateEd25519KeyPairPem } from "../src/lib/crypto.js";
 
@@ -50,14 +51,15 @@ async function main() {
     AuditEntry.deleteMany({}),
     ClinicCode.deleteMany({}),
     RegistrationAttempt.deleteMany({}),
+    OtpRequest.deleteMany({}),
   ]);
 
   const users = [
-    mkUser({ id: "u_doctor1", username: "doctor1", role: "doctor", password: "password123", withSigningKeys: true }),
-    mkUser({ id: "u_patient1", username: "patient1", role: "patient", password: "password123", withSigningKeys: false }),
-    mkUser({ id: "u_pharmacy1", username: "pharmacy1", role: "pharmacy", password: "password123", withSigningKeys: false }),
-    mkUser({ id: "u_mfg1", username: "mfg1", role: "manufacturer", password: "password123", withSigningKeys: true }),
-    mkUser({ id: "u_admin1", username: "admin1", role: "admin", password: "password123", withSigningKeys: false }),
+    { ...mkUser({ id: "u_doctor1", username: "doctor1", role: "doctor", password: "password123", withSigningKeys: true }), email: "doctor1@demo.local", mfaEnabled: false, mfaMethod: "NONE" },
+    { ...mkUser({ id: "u_patient1", username: "patient1", role: "patient", password: "password123", withSigningKeys: false }), email: "patient1@demo.local", mfaEnabled: false, mfaMethod: "NONE" },
+    { ...mkUser({ id: "u_pharmacy1", username: "pharmacy1", role: "pharmacy", password: "password123", withSigningKeys: false }), email: "pharmacy1@demo.local", mfaEnabled: false, mfaMethod: "NONE" },
+    { ...mkUser({ id: "u_mfg1", username: "mfg1", role: "manufacturer", password: "password123", withSigningKeys: true }), email: "mfg1@demo.local", mfaEnabled: false, mfaMethod: "NONE" },
+    { ...mkUser({ id: "u_admin1", username: "admin1", role: "admin", password: "password123", withSigningKeys: false }), email: "admin1@demo.local", mfaEnabled: false, mfaMethod: "NONE" },
   ];
 
   await User.insertMany(users);

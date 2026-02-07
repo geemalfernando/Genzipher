@@ -4,6 +4,7 @@ const DeviceSchema = new mongoose.Schema(
   {
     deviceId: { type: String, required: true, unique: true, index: true },
     patientToken: { type: String, required: true, index: true },
+    keyAlg: { type: String, required: true, enum: ["Ed25519", "ES256"], default: "Ed25519", index: true },
     publicKeyPem: { type: String, required: true },
     fingerprintHash: { type: String, default: null, index: true },
     firstSeenAt: { type: Date, default: null, index: true },
