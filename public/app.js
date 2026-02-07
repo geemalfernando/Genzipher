@@ -677,19 +677,36 @@ async function onLogin(e) {
       $("otpBox").hidden = false;
       $("otp_expires").textContent = out.expiresAt || "—";
       $("otp_sentTo").textContent = out.sentTo || "—";
-      toast("OTP required. Check server logs for code (MVP).", "warning");
+      toast(out.delivery === "email" ? "OTP sent to your email. Enter it to continue." : "OTP required. Check server logs (MVP).", "warning");
+      return;
+    }
+    if (out.mfaRequired && out.method === "EMAIL_LINK") {
+      toast("Verification link sent to your email. Open it to finish login.", "warning");
       return;
     }
     setPendingOtpState(null);
     setToken(out.token);
     toast("Logged in", "success");
   } catch (err) {
-    $("pr_out").value = pretty({ ok: false, error: err.message });
-    if (String(err.message || "").startsWith("username_taken")) {
-      const base = $("pr_username").value.trim() || "newpatient";
-      $("pr_username").value = `${base}${Math.floor(100 + Math.random() * 900)}`;
-    }
     toast(err.message, "error");
+  }
+}
+
+async function consumeMagicLinkIfPresent() {
+  const url = new URL(window.location.href);
+  const token = url.searchParams.get("mlt");
+  if (!token) return false;
+  try {
+    const deviceId = getDeviceId();
+    const out = await api("/auth/magic-link/consume", { method: "POST", body: { token, deviceId } });
+    url.searchParams.delete("mlt");
+    window.history.replaceState({}, "", url.toString());
+    setToken(out.token);
+    toast("Device verified. Logged in.", "success");
+    return true;
+  } catch (err) {
+    toast(`Magic link failed: ${err.message}`, "error");
+    return false;
   }
 }
 
@@ -2622,6 +2639,7 @@ async function init() {
   setAccessTab("login");
   await checkHealth();
   await checkUrlRole();
+  await consumeMagicLinkIfPresent();
   await updateAuthUi();
 
   const pharmLink = document.querySelector('a[href="/pharmacist/signup"]');
