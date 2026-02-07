@@ -214,6 +214,7 @@ function setToken(token) {
   if (!token) {
     localStorage.removeItem("gz_token");
     localStorage.removeItem("auth_token");
+    setCsrfToken(null);
   } else {
     localStorage.setItem("gz_token", token);
     localStorage.setItem("auth_token", token);
@@ -303,6 +304,27 @@ function getPendingResetState() {
   }
 }
 
+function setCsrfToken(token) {
+  if (!token) localStorage.removeItem("gz_csrf");
+  else localStorage.setItem("gz_csrf", String(token));
+}
+
+function getCsrfToken() {
+  return (localStorage.getItem("gz_csrf") || "").trim() || null;
+}
+
+async function ensureCsrfToken() {
+  const token = getToken();
+  if (!token) return;
+  if (getCsrfToken()) return;
+  try {
+    const out = await api("/auth/csrf");
+    if (out?.csrfToken) setCsrfToken(out.csrfToken);
+  } catch {
+    // ignore (CSRF may be disabled on backend)
+  }
+}
+
 function resetRemainingAttempts(maxAttempts, attemptsUsed) {
   const remaining = Math.max(0, Number(maxAttempts || 3) - Number(attemptsUsed || 0));
   const el = $("forgot_remaining");
@@ -312,12 +334,14 @@ function resetRemainingAttempts(maxAttempts, attemptsUsed) {
 async function api(path, { method = "GET", body } = {}) {
   const token = getToken();
   const deviceId = getDeviceId();
+  const csrf = getCsrfToken();
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: {
       ...(body ? { "content-type": "application/json" } : {}),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(deviceId ? { "x-gz-device-id": deviceId } : {}),
+      ...(method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && csrf ? { "x-gz-csrf": csrf } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -362,6 +386,15 @@ function toggleForgotBox(force) {
   if (!box) return;
   const show = typeof force === "boolean" ? force : box.hidden;
   box.hidden = !show;
+}
+
+function wireShowPassword({ checkboxId, inputId }) {
+  const cb = $(checkboxId);
+  const input = $(inputId);
+  if (!cb || !input) return;
+  cb.addEventListener("change", () => {
+    input.type = cb.checked ? "text" : "password";
+  });
 }
 
 // Handle role-based routing
@@ -435,6 +468,7 @@ async function updateAuthUi() {
 
   try {
     const whoami = await api("/demo/whoami");
+    await ensureCsrfToken();
     const auth = whoami.auth;
     $("whoami").textContent = `${auth.username} (${auth.role})`;
     $("currentRole").textContent = auth.role;
@@ -1601,16 +1635,19 @@ function wire() {
   $("tabRegister").addEventListener("click", () => setAccessTab("register"));
 
   $("loginForm").addEventListener("submit", onLogin);
+  wireShowPassword({ checkboxId: "login_show_password", inputId: "login_password" });
   $("forgotToggleBtn")?.addEventListener("click", () => toggleForgotBox());
   $("forgotRequestForm")?.addEventListener("submit", onForgotRequest);
   $("forgotConfirmForm")?.addEventListener("submit", onForgotConfirm);
   $("forgotResendBtn")?.addEventListener("click", onForgotResend);
   $("forgotSetForm")?.addEventListener("submit", onForgotSet);
+  wireShowPassword({ checkboxId: "forgot_show_password", inputId: "forgot_new_password" });
   $("otpForm").addEventListener("submit", onVerifyOtp);
   $("otpResendBtn").addEventListener("click", onResendOtp);
   $("logoutBtn").addEventListener("click", onLogout);
 
   $("preRegisterForm").addEventListener("submit", onPreRegister);
+  wireShowPassword({ checkboxId: "pr_show_password", inputId: "pr_password" });
   $("verifyClinicForm").addEventListener("submit", onVerifyClinicCode);
 
   $("rxForm").addEventListener("submit", onCreateRx);
@@ -1778,11 +1815,12 @@ async function onLoadAppointments() {
   try {
     const data = await api("/appointments");
     const list = $("appointmentsList");
-    if (data.appointments.length === 0) {
+    const appts = Array.isArray(data.appointments) ? data.appointments : [];
+    if (appts.length === 0) {
       list.innerHTML = '<div class="color-fg-muted text-small">No appointments found.</div>';
       return;
     }
-    list.innerHTML = data.appointments.map(apt => `
+    list.innerHTML = appts.map(apt => `
       <div class="Box p-2 mb-2">
         <div class="d-flex flex-justify-between flex-items-center">
           <div>
@@ -1837,13 +1875,14 @@ async function onSearchPatients(query) {
     const data = await api(`/doctors/patients/search?query=${encodeURIComponent(query)}`);
     const resultsContainer = $("doctor_patientSearchResults");
     
-    if (data.patients.length === 0) {
+    const patients = Array.isArray(data.patients) ? data.patients : [];
+    if (patients.length === 0) {
       resultsContainer.style.display = "none";
       return;
     }
     
     resultsContainer.innerHTML = "";
-    data.patients.forEach(patient => {
+    patients.forEach(patient => {
       const item = document.createElement("div");
       item.className = "p-2 border-bottom";
       item.style.cursor = "pointer";

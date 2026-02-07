@@ -58,6 +58,12 @@
                 <div class="text-small color-fg-muted">Password</div>
                 <input id="login_password" class="form-control input-block" type="password" value="password123" />
               </label>
+              <div class="form-checkbox">
+                <label>
+                  <input id="login_show_password" type="checkbox" />
+                  Show password
+                </label>
+              </div>
               <label class="form-group">
                 <div class="text-small color-fg-muted">MFA (required for admin/doctor/pharmacy/manufacturer)</div>
                 <input id="login_mfa" class="form-control input-block" placeholder="123456" />
@@ -107,15 +113,21 @@
               </div>
 
               <div id="forgotSetBox" class="mt-2" hidden>
-                <form id="forgotSetForm" class="d-flex flex-column gap-2">
-                  <label class="form-group">
-                    <div class="text-small color-fg-muted">New password</div>
-                    <input id="forgot_new_password" class="form-control input-block" type="password" placeholder="New password (min 8 chars)" />
+              <form id="forgotSetForm" class="d-flex flex-column gap-2">
+                <label class="form-group">
+                  <div class="text-small color-fg-muted">New password</div>
+                  <input id="forgot_new_password" class="form-control input-block" type="password" placeholder="New password (min 8 chars)" />
+                </label>
+                <div class="form-checkbox">
+                  <label>
+                    <input id="forgot_show_password" type="checkbox" />
+                    Show password
                   </label>
-                  <button id="forgotSetBtn" class="btn btn-primary" type="submit">Set new password</button>
-                </form>
-              </div>
+                </div>
+                <button id="forgotSetBtn" class="btn btn-primary" type="submit">Set new password</button>
+              </form>
             </div>
+          </div>
 
             <div id="otpBox" class="Box p-2 mt-3" hidden>
               <h3 class="f6 mb-1">Email OTP</h3>
@@ -163,6 +175,12 @@
                 <div class="text-small color-fg-muted">New password</div>
                 <input id="pr_password" class="form-control input-block" type="password" placeholder="Choose a password" />
               </label>
+              <div class="form-checkbox">
+                <label>
+                  <input id="pr_show_password" type="checkbox" />
+                  Show password
+                </label>
+              </div>
               <button class="btn btn-primary" type="submit">Pre-register</button>
             </form>
 

@@ -25,6 +25,7 @@ import { WebAuthnChallenge } from "./db/models/WebAuthnChallenge.js";
 import { Medicine } from "./db/models/Medicine.js";
 import { Stock } from "./db/models/Stock.js";
 import { QualityVerification } from "./db/models/QualityVerification.js";
+import { Appointment } from "./db/models/Appointment.js";
 import { Prescription } from "./db/models/Prescription.js";
 import { Batch } from "./db/models/Batch.js";
 import { Dispense } from "./db/models/Dispense.js";
@@ -58,6 +59,7 @@ const DEVICE_STEP_UP_ROLES = new Set(
     .filter(Boolean)
 );
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`).trim();
+const CSRF_ENABLED = String(process.env.CSRF_ENABLED || "true").toLowerCase() !== "false";
 
 function asyncRoute(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -139,6 +141,33 @@ function computeRpId({ req }) {
     // ignore
   }
   return req?.hostname || req?.get?.("host") || "localhost";
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  if (value && typeof value === "object" && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)) {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function computeIntegrityHash({ prefix, obj }) {
+  return sha256Base64url(`${prefix}:${stableStringify(obj)}:${JWT_SECRET}`);
+}
+
+function looksLikeIsoDate(value) {
+  if (!isNonEmptyString(value)) return false;
+  const s = String(value).trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+function looksLikeTimeHHMM(value) {
+  if (!isNonEmptyString(value)) return false;
+  const s = String(value).trim();
+  if (!/^\d{2}:\d{2}$/.test(s)) return false;
+  const [hh, mm] = s.split(":").map((x) => Number(x));
+  return hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59;
 }
 
 function safeNumber(value) {
@@ -264,6 +293,7 @@ async function ensureIndexes() {
     Medicine.init(),
     Stock.init(),
     QualityVerification.init(),
+    Appointment.init(),
     Prescription.init(),
     Batch.init(),
     Dispense.init(),
@@ -382,6 +412,24 @@ function requirePharmacyBiometric(req, res, next) {
     .catch(next);
 }
 
+function requireCsrf(req, res, next) {
+  if (!CSRF_ENABLED) return next();
+  // Only enforce for browser-like state-changing requests.
+  const method = String(req.method || "GET").toUpperCase();
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return next();
+  if (!req.auth) return res.status(401).json({ error: "missing_bearer_token" });
+
+  const token = req.header("x-gz-csrf");
+  if (!isNonEmptyString(token)) return res.status(403).json({ error: "csrf_missing" });
+  const verified = jwtVerifyHs256({ token: String(token).trim(), secret: JWT_SECRET });
+  if (!verified.ok) return res.status(403).json({ error: "csrf_invalid" });
+  const payload = verified.payload || {};
+  if (payload.purpose !== "CSRF" || payload.sub !== req.auth.sub) return res.status(403).json({ error: "csrf_invalid" });
+  const did = getRequestDeviceId(req);
+  if (payload.deviceId && did && String(payload.deviceId) !== String(did)) return res.status(403).json({ error: "csrf_device_mismatch" });
+  return next();
+}
+
 async function recordLoginSuccess({ userId, deviceId, ip = null, userAgent = null }) {
   if (!looksLikeDeviceId(deviceId)) return;
   const now = new Date();
@@ -493,7 +541,7 @@ async function buildApp() {
         return cb(null, false);
       },
       methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
-      allowedHeaders: ["content-type", "authorization", "x-gz-device-id"],
+      allowedHeaders: ["content-type", "authorization", "x-gz-device-id", "x-gz-csrf"],
       optionsSuccessStatus: 204,
     })
   );
@@ -509,7 +557,7 @@ async function buildApp() {
         return cb(null, false);
       },
       methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
-      allowedHeaders: ["content-type", "authorization", "x-gz-device-id"],
+      allowedHeaders: ["content-type", "authorization", "x-gz-device-id", "x-gz-csrf"],
       optionsSuccessStatus: 204,
     })
   );
@@ -560,6 +608,16 @@ async function buildApp() {
   }));
 
   // --- Auth ---
+  app.get("/auth/csrf", requireAuth, asyncRoute(async (req, res) => {
+    const did = getRequestDeviceId(req);
+    const token = jwtSignHs256({
+      payload: { sub: req.auth.sub, purpose: "CSRF", deviceId: did || null },
+      secret: JWT_SECRET,
+      expiresInSeconds: 60 * 60,
+    });
+    res.json({ ok: true, csrfToken: token, expiresInSeconds: 60 * 60 });
+  }));
+
   app.post("/auth/login", asyncRoute(async (req, res) => {
     const { username, email, identifier, password, mfaCode } = req.body || {};
     const deviceId = req.body?.deviceId;
@@ -2507,6 +2565,92 @@ async function buildApp() {
     // Minimal exposure for demo UI
     const users = await User.find({}, { _id: 0, id: 1, username: 1, role: 1, status: 1 }).lean();
     res.json({ users });
+  }));
+
+  // --- Doctors + Appointments ---
+  app.get("/doctors", requireAuth, asyncRoute(async (req, res) => {
+    const doctors = await User.find(
+      { role: "doctor", status: "active" },
+      { _id: 0, id: 1, username: 1, role: 1, status: 1 }
+    )
+      .sort({ username: 1 })
+      .lean();
+    res.json({ count: doctors.length, doctors });
+  }));
+
+  app.post("/appointments", requireAuth, requireRole(["patient"]), requireCsrf, asyncRoute(async (req, res) => {
+    const { doctorId, appointmentDate, appointmentTime, notes } = req.body || {};
+    if (!isNonEmptyString(doctorId) || !looksLikeIsoDate(appointmentDate) || !looksLikeTimeHHMM(appointmentTime)) {
+      return res.status(400).json({ error: "bad_request", message: "doctorId + appointmentDate(YYYY-MM-DD) + appointmentTime(HH:MM) required" });
+    }
+
+    const doctor = await User.findOne({ id: String(doctorId).trim(), role: "doctor", status: "active" }).lean();
+    if (!doctor) return res.status(404).json({ error: "doctor_not_found" });
+
+    const patientToken = hmacTokenizePatientId(req.auth.sub);
+    const did = getRequestDeviceId(req);
+    const core = {
+      patientId: req.auth.sub,
+      doctorId: doctor.id,
+      appointmentDate: String(appointmentDate).trim(),
+      appointmentTime: String(appointmentTime).trim(),
+      notes: isNonEmptyString(notes) ? String(notes).trim().slice(0, 500) : null,
+      status: "scheduled",
+    };
+    const integrityHash = computeIntegrityHash({ prefix: "appointment", obj: core });
+
+    const record = {
+      id: randomId("apt"),
+      ...core,
+      patientToken,
+      requestedDeviceId: did,
+      requestedIp: String(getClientIp(req)).slice(0, 128),
+      integrityHash,
+      createdAt: nowIso(),
+    };
+
+    await Appointment.create(record);
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+      action: "appointment.created",
+      details: { appointmentId: record.id, doctorId: record.doctorId, appointmentDate: record.appointmentDate, appointmentTime: record.appointmentTime },
+    });
+
+    return res.status(201).json({
+      id: record.id,
+      doctorId: record.doctorId,
+      appointmentDate: record.appointmentDate,
+      appointmentTime: record.appointmentTime,
+      notes: record.notes,
+      status: record.status,
+      createdAt: record.createdAt,
+      integrityHash: record.integrityHash,
+    });
+  }));
+
+  app.get("/appointments", requireAuth, requireRole(["patient"]), asyncRoute(async (req, res) => {
+    const appointments = await Appointment.find(
+      { patientId: req.auth.sub },
+      { _id: 0, __v: 0, patientId: 0, patientToken: 0, requestedIp: 0 }
+    )
+      .sort({ appointmentDate: -1, appointmentTime: -1, createdAt: -1 })
+      .limit(100)
+      .lean();
+    res.json({ count: appointments.length, appointments });
+  }));
+
+  // Doctor: patient search (used by UI)
+  app.get("/doctors/patients/search", requireAuth, requireRole(["doctor"]), asyncRoute(async (req, res) => {
+    const q = isNonEmptyString(req.query?.query) ? String(req.query.query).trim() : "";
+    if (q.length < 2) return res.json({ count: 0, patients: [] });
+    const patients = await User.find(
+      { role: "patient", username: { $regex: q, $options: "i" }, status: "active" },
+      { _id: 0, id: 1, username: 1, role: 1, status: 1 }
+    )
+      .sort({ username: 1 })
+      .limit(20)
+      .lean();
+    res.json({ count: patients.length, patients });
   }));
 
   // --- Pharmacy/Pharmacist Endpoints (dashboard) ---
