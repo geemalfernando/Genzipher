@@ -3652,6 +3652,67 @@ async function buildApp() {
     });
   }));
 
+  // Doctor: prescriptions for a selected patient (ongoing + past)
+  app.get("/doctor/patient-prescriptions", requireAuth, requireRole(["doctor"]), asyncRoute(async (req, res) => {
+    const patientUserId = isNonEmptyString(req.query?.patientUserId) ? String(req.query.patientUserId).trim() : "";
+    const limit = clampInt(req.query?.limit, { min: 1, max: 200, fallback: 100 });
+    if (!isNonEmptyString(patientUserId)) {
+      return res.status(400).json({ error: "bad_request", message: "patientUserId query param required" });
+    }
+
+    const doctor = await User.findOne({ id: req.auth.sub, role: "doctor" }).lean();
+    const patient = await User.findOne({ id: patientUserId, role: "patient" }).lean();
+    if (!doctor) return res.status(404).json({ error: "doctor_not_found" });
+    if (!patient) return res.status(404).json({ error: "patient_not_found" });
+
+    const patientToken = hmacTokenizePatientId(patient.id);
+    const assignment = await Assignment.findOne({ doctorId: doctor.id }).lean();
+    const assigned = assignment?.patientTokens?.includes(patientToken);
+    if (!assigned) return res.status(403).json({ error: "not_assigned_to_patient" });
+
+    const prescriptions = await Prescription.find(
+      { doctorId: doctor.id, patientIdToken: patientToken, status: "active" },
+      { _id: 0, __v: 0 }
+    )
+      .sort({ issuedAt: -1, createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    const rxIds = prescriptions.map((p) => p.id).filter((id) => isNonEmptyString(id));
+    const dispensed = rxIds.length
+      ? await Dispense.find({ rxId: { $in: rxIds }, allowed: true }, { _id: 0, rxId: 1, ts: 1 }).lean()
+      : [];
+    const usedByRxId = new Map();
+    for (const d of dispensed) {
+      if (!isNonEmptyString(d?.rxId)) continue;
+      const key = String(d.rxId);
+      const prev = usedByRxId.get(key);
+      if (!prev || String(d.ts).localeCompare(String(prev)) > 0) usedByRxId.set(key, d.ts);
+    }
+
+    const items = prescriptions.map((rx) => {
+      const expired = Date.parse(rx.expiry) < Date.now();
+      const usedAt = usedByRxId.get(rx.id) || null;
+      const status = usedAt ? "USED" : expired ? "EXPIRED" : "VALID";
+      return { prescription: rx, status, usedAt };
+    });
+
+    const ongoing = items.filter((i) => i.status === "VALID");
+    const past = items.filter((i) => i.status !== "VALID");
+
+    return res.json({
+      ok: true,
+      patient: { id: patient.id, username: patient.username },
+      patientToken,
+      count: items.length,
+      ongoingCount: ongoing.length,
+      pastCount: past.length,
+      ongoing,
+      past,
+      items,
+    });
+  }));
+
   // Alert feed derived from audit logs (high-signal, role-scoped).
   app.get("/alerts/feed", requireAuth, asyncRoute(async (req, res) => {
     const windowHours = clampInt(req.query?.windowHours, { min: 1, max: 24 * 30, fallback: 24 });

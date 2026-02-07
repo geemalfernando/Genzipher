@@ -28,6 +28,9 @@ export default function DoctorDashboard() {
   const [recentPrescriptions, setRecentPrescriptions] = useState([])
   const [alerts, setAlerts] = useState([])
 
+  // Patient prescription history (for selected patient)
+  const [patientRxHistory, setPatientRxHistory] = useState(null)
+
   // Appointments (doctor view)
   const [doctorAppointments, setDoctorAppointments] = useState([])
   const [apptFilter, setApptFilter] = useState({ status: '', date: '' })
@@ -104,6 +107,25 @@ export default function DoctorDashboard() {
       setAlerts([])
     }
   }
+
+  const loadPatientPrescriptionHistory = async (patientUserId) => {
+    if (!patientUserId) {
+      setPatientRxHistory(null)
+      return
+    }
+    try {
+      const data = await api(`/doctor/patient-prescriptions?patientUserId=${encodeURIComponent(patientUserId)}&limit=100`)
+      setPatientRxHistory(data)
+    } catch (err) {
+      console.error('Patient prescription history load error:', err)
+      setPatientRxHistory(null)
+    }
+  }
+
+  useEffect(() => {
+    if (!token) return
+    loadPatientPrescriptionHistory(selectedPatient)
+  }, [selectedPatient, token])
 
   const loadVitals = async ({ patientToken, breakGlass }) => {
     if (!patientToken) return
@@ -444,6 +466,70 @@ export default function DoctorDashboard() {
                     Create Rx
                   </button>
                 </div>
+              </div>
+
+              <div className="healthcare-card" style={{ marginTop: '1.25rem', background: 'var(--healthcare-bg)' }}>
+                <h3 style={{ marginTop: 0 }}>Patient prescriptions</h3>
+                <p style={{ color: 'var(--healthcare-text-muted)', marginTop: '0.25rem' }}>
+                  Ongoing prescriptions are valid and not yet used. Past prescriptions are used or expired.
+                </p>
+
+                {!selectedPatient ? (
+                  <p className="empty-state">Select a patient to view prescription history.</p>
+                ) : !patientRxHistory ? (
+                  <p className="empty-state">Loading history…</p>
+                ) : (
+                  <div className="section-grid" style={{ gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                    <div className="healthcare-card" style={{ margin: 0 }}>
+                      <h4 style={{ marginTop: 0 }}>Ongoing ({patientRxHistory.ongoingCount || 0})</h4>
+                      {(patientRxHistory.ongoing || []).length === 0 ? (
+                        <p className="empty-state">No ongoing prescriptions.</p>
+                      ) : (
+                        <div className="appointments-list">
+                          {patientRxHistory.ongoing.map((it) => (
+                            <div key={it.prescription?.id} className="appointment-item">
+                              <div className="appointment-header">
+                                <span className="appointment-status">VALID</span>
+                                <span className="appointment-date">
+                                  {it.prescription?.issuedAt ? new Date(it.prescription.issuedAt).toLocaleString() : '—'}
+                                </span>
+                              </div>
+                              <div className="appointment-details">
+                                <p><strong>Medicine:</strong> {it.prescription?.medicineId || '—'}</p>
+                                <p><strong>Dosage:</strong> {it.prescription?.dosage || '—'}</p>
+                                <p><strong>Expires:</strong> {it.prescription?.expiry ? new Date(it.prescription.expiry).toLocaleString() : '—'}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="healthcare-card" style={{ margin: 0 }}>
+                      <h4 style={{ marginTop: 0 }}>Past ({patientRxHistory.pastCount || 0})</h4>
+                      {(patientRxHistory.past || []).length === 0 ? (
+                        <p className="empty-state">No past prescriptions.</p>
+                      ) : (
+                        <div className="appointments-list">
+                          {patientRxHistory.past.map((it) => (
+                            <div key={it.prescription?.id} className="appointment-item">
+                              <div className="appointment-header">
+                                <span className="appointment-status">{it.status || 'PAST'}</span>
+                                <span className="appointment-date">
+                                  {it.usedAt ? `Used ${new Date(it.usedAt).toLocaleString()}` : (it.prescription?.expiry ? `Expired ${new Date(it.prescription.expiry).toLocaleString()}` : '—')}
+                                </span>
+                              </div>
+                              <div className="appointment-details">
+                                <p><strong>Medicine:</strong> {it.prescription?.medicineId || '—'}</p>
+                                <p><strong>Dosage:</strong> {it.prescription?.dosage || '—'}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div style={{ marginBottom: '1.25rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
