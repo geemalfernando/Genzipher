@@ -1202,11 +1202,26 @@ async function autoBindDevice() {
     }
 
     if (!challenge) {
-      const bind = await api("/patients/bind-device", {
-        method: "POST",
-        body: { deviceId, publicKeyPem, keyAlg: "ES256" },
-      });
-      challenge = bind.challenge;
+      try {
+        const bind = await api("/patients/bind-device", {
+          method: "POST",
+          body: { deviceId, publicKeyPem, keyAlg: "ES256" },
+        });
+        if (bind.status === "active") {
+          outEl.value = pretty({ ok: true, status: "already_active", deviceId });
+          return;
+        }
+        challenge = bind.challenge;
+      } catch (err) {
+        // If the device already exists for this patient, fetch a fresh challenge and continue.
+        if (!String(err.message).includes("device_exists")) throw err;
+        const ch = await api("/auth/device-challenge", { method: "POST", body: { deviceId } });
+        if (ch.status === "active") {
+          outEl.value = pretty({ ok: true, status: "already_active", deviceId });
+          return;
+        }
+        challenge = ch.challenge;
+      }
     }
 
     // 2) Sign challenge and verify

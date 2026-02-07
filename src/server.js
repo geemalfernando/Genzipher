@@ -1771,7 +1771,38 @@ async function buildApp() {
     const patientToken = hmacTokenizePatientId(req.auth.sub);
 
     const exists = await Device.findOne({ deviceId }).lean();
-    if (exists) return res.status(409).json({ error: "device_exists" });
+    if (exists) {
+      // Idempotent bind for the same patient/device (prevents 409 loops on refresh/re-login).
+      if (exists.patientToken !== patientToken) return res.status(409).json({ error: "device_exists" });
+
+      // If already active, just return.
+      if (exists.status === "active") {
+        return res.status(200).json({ ok: true, deviceId, patientToken, status: "active" });
+      }
+
+      // Prevent an attacker from rebinding the same deviceId with a different key.
+      const sameAlg = String(exists.keyAlg || "Ed25519") === alg;
+      const sameKey = String(exists.publicKeyPem || "").trim() === String(publicKeyPem || "").trim();
+      if (!sameAlg || !sameKey) {
+        return res.status(409).json({ error: "device_exists_key_mismatch" });
+      }
+
+      const nonce = randomId("chal");
+      await Device.updateOne(
+        { deviceId },
+        {
+          $set: { challengeNonce: nonce, challengeIssuedAt: new Date(), lastSeenAt: new Date() },
+        }
+      );
+      return res.status(200).json({
+        ok: true,
+        deviceId,
+        patientToken,
+        status: "pending",
+        challenge: { deviceId, nonce },
+        next: "auth/device-verify",
+      });
+    }
 
     const nonce = randomId("chal");
     await Device.create({
