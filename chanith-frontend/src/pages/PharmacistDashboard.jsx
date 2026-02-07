@@ -362,6 +362,23 @@ export default function PharmacistDashboard() {
                     <div className="alert-content">
                       <strong>Error: {biometricError}</strong>
                     </div>
+                    {String(biometricError || '').startsWith('credential_exists (') && (
+                      <div style={{ marginLeft: 'auto' }}>
+                        <button
+                          type="button"
+                          className="btn-secondary btn-sm"
+                          onClick={async () => {
+                            const match = String(biometricError).match(/\(([^)]+)\)/)
+                            const cid = match ? match[1] : ''
+                            if (!cid) return toast('No credentialId found', 'warning')
+                            await navigator.clipboard.writeText(cid)
+                            toast('credentialIdB64u copied (send to admin)', 'success')
+                          }}
+                        >
+                          Copy ID
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 

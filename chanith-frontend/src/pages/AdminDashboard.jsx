@@ -49,6 +49,11 @@ export default function AdminDashboard() {
   const [analyticsBucketMinutes, setAnalyticsBucketMinutes] = useState(60)
   const [showAnalyticsJson, setShowAnalyticsJson] = useState(false)
 
+  // Biometric support (clear credential_exists)
+  const [biometricCredentialId, setBiometricCredentialId] = useState('')
+  const [biometricLookup, setBiometricLookup] = useState(null)
+  const [biometricSupportLoading, setBiometricSupportLoading] = useState(false)
+
   useEffect(() => {
     if (!token) {
       navigate('/login')
@@ -255,6 +260,39 @@ export default function AdminDashboard() {
       setAnalytics(null)
     } finally {
       setAnalyticsLoading(false)
+    }
+  }
+
+  const handleBiometricLookup = async () => {
+    const cid = String(biometricCredentialId || '').trim()
+    if (!cid) return toast('Enter credentialIdB64u first', 'error')
+    try {
+      setBiometricSupportLoading(true)
+      const out = await api(`/admin/biometrics/lookup?credentialIdB64u=${encodeURIComponent(cid)}`)
+      setBiometricLookup(out)
+      toast(out.found ? 'Biometric found' : 'No biometric found', out.found ? 'warning' : 'success')
+    } catch (err) {
+      setBiometricLookup(null)
+      toast(err.message || 'Lookup failed', 'error')
+    } finally {
+      setBiometricSupportLoading(false)
+    }
+  }
+
+  const handleBiometricDelete = async () => {
+    const cid = String(biometricCredentialId || '').trim()
+    if (!cid) return toast('Enter credentialIdB64u first', 'error')
+    const ok = window.confirm('Delete this biometric credential from the database? The user will need to enroll again.')
+    if (!ok) return
+    try {
+      setBiometricSupportLoading(true)
+      const out = await api('/admin/biometrics/delete', { method: 'POST', body: { credentialIdB64u: cid } })
+      toast(out.deleted ? 'Biometric deleted' : 'Nothing to delete', out.deleted ? 'success' : 'warning')
+      await handleBiometricLookup()
+    } catch (err) {
+      toast(err.message || 'Delete failed', 'error')
+    } finally {
+      setBiometricSupportLoading(false)
     }
   }
 
@@ -660,6 +698,64 @@ export default function AdminDashboard() {
                 <p style={{ marginTop: '0.75rem', fontSize: '0.875rem', color: 'var(--healthcare-text-muted)' }}>
                   Uses POST /admin/mail/test. If it fails, error details will show in the toast.
                 </p>
+              </div>
+
+              {/* Biometric Support Section */}
+              <div style={{ marginBottom: '2rem', paddingBottom: '2rem', borderBottom: '1px solid var(--healthcare-border)' }}>
+                <h3 style={{ marginBottom: '0.5rem', fontSize: '1.125rem', fontWeight: 600 }}>Biometric support:</h3>
+                <p style={{ marginTop: 0, marginBottom: '1rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+                  Use this when a pharmacist sees <span style={{ fontFamily: 'monospace' }}>credential_exists</span>. Paste the shown <span style={{ fontFamily: 'monospace' }}>credentialIdB64u</span>, lookup the owner, and delete stale credentials if needed.
+                </p>
+
+                <div className="form-grid" style={{ gridTemplateColumns: '1fr', gap: '1rem', marginBottom: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">credentialIdB64u</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={biometricCredentialId}
+                      onChange={(e) => setBiometricCredentialId(e.target.value)}
+                      placeholder="Paste credentialIdB64u from the pharmacist error…"
+                      style={{ fontFamily: 'monospace' }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <button onClick={handleBiometricLookup} className="btn-secondary" disabled={biometricSupportLoading}>
+                    Lookup
+                  </button>
+                  <button onClick={handleBiometricDelete} className="btn-danger" disabled={biometricSupportLoading}>
+                    Delete
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!biometricLookup) return toast('Nothing to copy', 'warning')
+                      await navigator.clipboard.writeText(JSON.stringify(biometricLookup, null, 2))
+                      toast('Copied', 'success')
+                    }}
+                    className="btn-secondary"
+                    type="button"
+                    disabled={!biometricLookup}
+                  >
+                    Copy JSON
+                  </button>
+                </div>
+
+                {biometricLookup && (
+                  <pre
+                    style={{
+                      marginTop: '1rem',
+                      padding: '1rem',
+                      background: 'var(--healthcare-bg)',
+                      borderRadius: '8px',
+                      overflowX: 'auto',
+                      fontSize: '0.8125rem',
+                    }}
+                  >
+                    {JSON.stringify(biometricLookup, null, 2)}
+                  </pre>
+                )}
               </div>
 
               {/* System Audit Section */}
