@@ -1801,11 +1801,36 @@ async function buildApp() {
       if (existing.userId === req.auth.sub) {
         const isActive = existing.isActive !== false;
         if (!isActive) {
-          await Biometric.updateOne({ id: existing.id }, { $set: { isActive: true, publicKeyJson, lastUsedAt: null } });
+          await Biometric.updateOne(
+            { id: existing.id },
+            {
+              $set: {
+                isActive: true,
+                lastUsedAt: null,
+                ...(isNonEmptyString(deviceName) ? { deviceName: String(deviceName).trim().slice(0, 64) } : {}),
+              },
+            }
+          );
         }
         return res.status(200).json({ ok: true, alreadyEnrolled: true, reactivated: !isActive });
       }
-      return res.status(409).json({ error: "credential_exists", message: "This biometric credential is already enrolled (try logging into the account that enrolled it)." });
+
+      // If the credential is orphaned (user deleted), clean it up and allow enrollment to proceed.
+      const owner = await User.findOne({ id: existing.userId }).lean();
+      if (!owner) {
+        await Biometric.deleteOne({ id: existing.id });
+        await auditAppend({
+          actor: { userId: req.auth.sub, role: "pharmacy", username: req.auth.username },
+          action: "biometric.orphan_deleted",
+          details: { credentialId: credIdB64u, deletedBiometricId: existing.id },
+        });
+      } else {
+        return res.status(409).json({
+          error: "credential_exists",
+          credentialIdB64u: credIdB64u,
+          message: "This device biometric is already enrolled for another account. Use a different browser profile/device, or ask an admin to clear the old enrollment.",
+        });
+      }
     }
 
     const attObjBuf = bytesFromUnknown(credential?.response?.attestationObject);
@@ -1836,7 +1861,13 @@ async function buildApp() {
       });
     } catch (err) {
       // Avoid leaking DB internals to clients, but do return a meaningful reason for common cases.
-      if (String(err?.code) === "11000") return res.status(409).json({ error: "credential_exists" });
+      if (String(err?.code) === "11000") {
+        return res.status(409).json({
+          error: "credential_exists",
+          credentialIdB64u: credIdB64u,
+          message: "This device biometric is already enrolled for another account (or a stale record exists).",
+        });
+      }
       throw err;
     }
 
