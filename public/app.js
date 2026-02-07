@@ -334,14 +334,36 @@ function resetRemainingAttempts(maxAttempts, attemptsUsed) {
 async function api(path, { method = "GET", body } = {}) {
   const token = getToken();
   const deviceId = getDeviceId();
-  const csrf = getCsrfToken();
+  let csrf = getCsrfToken();
+  const needsCsrf = method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+
+  // If we're about to send a state-changing request and we have no CSRF token yet,
+  // fetch one on-demand to avoid "csrf_missing" race conditions right after login.
+  if (needsCsrf && token && !csrf) {
+    try {
+      const r = await fetch(`${API_BASE}/auth/csrf`, {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(deviceId ? { "x-gz-device-id": deviceId } : {}),
+        },
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.csrfToken) {
+        setCsrfToken(j.csrfToken);
+        csrf = j.csrfToken;
+      }
+    } catch {
+      // ignore (backend may have CSRF disabled)
+    }
+  }
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: {
       ...(body ? { "content-type": "application/json" } : {}),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(deviceId ? { "x-gz-device-id": deviceId } : {}),
-      ...(method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && csrf ? { "x-gz-csrf": csrf } : {}),
+      ...(needsCsrf && csrf ? { "x-gz-csrf": csrf } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
