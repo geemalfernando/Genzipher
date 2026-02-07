@@ -7,7 +7,7 @@ import '../styles/PatientDashboard.css'
 export default function PatientDashboard() {
   const navigate = useNavigate()
   const { token, logout } = useAuth()
-  const [activeSection, setActiveSection] = useState('appointments')
+  const [activeSection, setActiveSection] = useState('wallet')
   const [loading, setLoading] = useState(true)
   
   // Profile data
