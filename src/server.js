@@ -45,7 +45,14 @@ import {
 } from "./lib/crypto.js";
 import { jwtSignHs256, jwtVerifyHs256 } from "./lib/jwt.js";
 import { computeAuditHash } from "./lib/audit.js";
-import { isSmtpEnabled, sendClinicCodeEmail, sendMagicLinkEmail, sendOtpEmail, verifySmtpConnection } from "./lib/mailer.js";
+import {
+  isSmtpEnabled,
+  sendClinicCodeEmail,
+  sendMagicLinkEmail,
+  sendOtpEmail,
+  sendPrescriptionIssuedEmail,
+  verifySmtpConnection,
+} from "./lib/mailer.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
@@ -60,6 +67,9 @@ const DEVICE_STEP_UP_ROLES = new Set(
 );
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`).trim();
 const CSRF_ENABLED = String(process.env.CSRF_ENABLED || "true").toLowerCase() !== "false";
+const RX_EMAIL_NOTIFICATIONS = ["1", "true", "yes", "on"].includes(
+  String(process.env.RX_EMAIL_NOTIFICATIONS || "").trim().toLowerCase()
+);
 
 function asyncRoute(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -2575,7 +2585,37 @@ async function buildApp() {
       details: { rxId: rx.id, patientToken, medicineId },
     });
 
-    return res.status(201).json(rx);
+    // Best-effort patient notification (email). Dashboard remains source of truth.
+    let notification = { attempted: false, delivery: "none", sentTo: null };
+    if (RX_EMAIL_NOTIFICATIONS && isSmtpEnabled()) {
+      const patientEmail =
+        looksLikeEmail(patient.email) && !String(patient.email).endsWith("@demo.local")
+          ? String(patient.email).trim().toLowerCase()
+          : null;
+      if (patientEmail) {
+        notification.attempted = true;
+        try {
+          await sendPrescriptionIssuedEmail({ to: patientEmail, doctorUsername: doctor.username, rx });
+          notification = { attempted: true, delivery: "email", sentTo: patientEmail };
+          await auditAppend({
+            actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+            action: "rx.patient_notified",
+            details: { rxId: rx.id, sentTo: patientEmail },
+          });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(err);
+          notification = { attempted: true, delivery: "failed", sentTo: patientEmail };
+          await auditAppend({
+            actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+            action: "rx.patient_notify_failed",
+            details: { rxId: rx.id, sentTo: patientEmail, error: String(err?.message || "send_failed").slice(0, 200) },
+          });
+        }
+      }
+    }
+
+    return res.status(201).json({ ...rx, notification });
   }));
 
   app.post("/prescriptions/verify", asyncRoute(async (req, res) => {

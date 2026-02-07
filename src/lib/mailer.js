@@ -102,3 +102,31 @@ export async function sendMagicLinkEmail({ to, verifyUrl, expiresAtIso }) {
     text: `We detected a login from a new device.\n\nVerify this device by clicking:\n${verifyUrl}\n\nThis link expires at: ${expiresAtIso}\n\nIf this wasn't you, ignore this email.`,
   });
 }
+
+export async function sendPrescriptionIssuedEmail({ to, doctorUsername, rx }) {
+  const transporter = getMailer();
+  const from = (process.env.FROM_EMAIL || process.env.SMTP_USER || "").trim();
+  if (!from) throw new Error("FROM_EMAIL not set");
+
+  const safeDoctor = doctorUsername ? String(doctorUsername) : "your doctor";
+  const medicineId = rx?.medicineId ? String(rx.medicineId) : "—";
+  const dosage = rx?.dosage ? String(rx.dosage) : "—";
+  const durationDays = typeof rx?.durationDays === "number" ? String(rx.durationDays) : rx?.durationDays ? String(rx.durationDays) : "—";
+  const expiry = rx?.expiry ? String(rx.expiry) : "—";
+  const rxId = rx?.id ? String(rx.id) : "—";
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: "New prescription issued",
+    text:
+      `A new prescription was issued by ${safeDoctor}.\n\n` +
+      `Prescription ID: ${rxId}\n` +
+      `Medicine: ${medicineId}\n` +
+      `Dosage: ${dosage}\n` +
+      `Duration: ${durationDays} day(s)\n` +
+      `Expires: ${expiry}\n\n` +
+      `You can view this prescription in your GenZipher patient dashboard.\n\n` +
+      `If you did not expect this, contact your clinic.`,
+  });
+}
