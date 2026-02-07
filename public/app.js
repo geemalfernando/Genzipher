@@ -3,7 +3,8 @@ function computeApiBase() {
   const stored = (localStorage.getItem("gz_api_base") || "").trim();
   const isFirebaseHost =
     window.location.hostname.endsWith(".web.app") || window.location.hostname.endsWith(".firebaseapp.com");
-  const auto = isFirebaseHost ? "https://genzipher.vercel.app" : "";
+  // Prefer the explicit Vercel Functions base path to avoid relying on Vercel rewrites for non-GET methods (e.g. CORS preflight OPTIONS).
+  const auto = isFirebaseHost ? "https://genzipher.vercel.app/api" : "";
   const base = explicit || stored || auto || "";
   window.GZ_API_BASE = base;
   return base;
