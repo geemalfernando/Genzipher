@@ -285,9 +285,15 @@ async function init() {
   wire();
   await checkHealth();
   await updateAuthUi();
+
+  const expiryEl = $("batch_expiry");
+  if (expiryEl && !expiryEl.value) {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() + 1);
+    expiryEl.value = d.toISOString().slice(0, 10);
+  }
 }
 
 init().catch((err) => {
   toast(err.message, "error");
 });
-

@@ -1,6 +1,8 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
+import mongoSanitize from "express-mongo-sanitize";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,11 +34,21 @@ const PORT = Number(process.env.PORT || 3000);
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 const DEMO_MFA_CODE = process.env.DEMO_MFA_CODE || "123456";
 const MFA_REQUIRED_ROLES = new Set(["doctor", "pharmacy", "manufacturer", "admin"]);
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
 
 function hmacTokenizePatientId(patientUserId) {
   const h = crypto.createHmac("sha256", JWT_SECRET);
   h.update(`patient:${patientUserId}`);
   return h.digest("hex").slice(0, 32);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function safeNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 function getBearer(req) {
@@ -106,8 +118,41 @@ async function start() {
 
   const app = express();
   app.disable("x-powered-by");
-  app.use(cors());
-  app.use(express.json({ limit: "1mb" }));
+
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        useDefaults: true,
+        directives: {
+          "default-src": ["'self'"],
+          "script-src": ["'self'"],
+          "style-src": ["'self'", "https://unpkg.com", "'unsafe-inline'"],
+          "img-src": ["'self'"],
+          "connect-src": ["'self'"],
+          "object-src": ["'none'"],
+          "base-uri": ["'self'"],
+          "frame-ancestors": ["'none'"],
+          "upgrade-insecure-requests": [],
+        },
+      },
+      crossOriginEmbedderPolicy: false,
+    })
+  );
+
+  app.use(
+    cors(
+      CORS_ORIGIN
+        ? {
+            origin: CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean),
+          }
+        : {
+            origin: false,
+          }
+    )
+  );
+
+  app.use(express.json({ limit: "1mb", type: ["application/json", "application/*+json"] }));
+  app.use(mongoSanitize({ replaceWith: "_" }));
 
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
@@ -124,7 +169,9 @@ async function start() {
   // --- Auth ---
   app.post("/auth/login", async (req, res) => {
     const { username, password, mfaCode } = req.body || {};
-    if (!username || !password) return res.status(400).json({ error: "bad_request", message: "username/password required" });
+    if (!isNonEmptyString(username) || !isNonEmptyString(password)) {
+      return res.status(400).json({ error: "bad_request", message: "username/password required" });
+    }
 
     const user = await User.findOne({ username }).lean();
     if (!user || user.password !== password || user.status !== "active") {
@@ -158,7 +205,9 @@ async function start() {
   // --- Devices (device binding) ---
   app.post("/devices/register", requireAuth, requireRole(["patient"]), async (req, res) => {
     const { deviceId, publicKeyPem } = req.body || {};
-    if (!deviceId || !publicKeyPem) return res.status(400).json({ error: "bad_request", message: "deviceId/publicKeyPem required" });
+    if (!isNonEmptyString(deviceId) || !isNonEmptyString(publicKeyPem)) {
+      return res.status(400).json({ error: "bad_request", message: "deviceId/publicKeyPem required" });
+    }
     const patientToken = hmacTokenizePatientId(req.auth.sub);
 
     const exists = await Device.findOne({ deviceId }).lean();
@@ -176,7 +225,7 @@ async function start() {
   // --- Vitals upload ---
   app.post("/vitals/upload", requireAuth, requireRole(["patient"]), async (req, res) => {
     const { deviceId, payload, signatureB64url } = req.body || {};
-    if (!deviceId || !payload || !signatureB64url) {
+    if (!isNonEmptyString(deviceId) || !payload || !isNonEmptyString(signatureB64url)) {
       return res.status(400).json({ error: "bad_request", message: "deviceId/payload/signatureB64url required" });
     }
 
@@ -248,7 +297,8 @@ async function start() {
   // --- Prescriptions ---
   app.post("/prescriptions", requireAuth, requireRole(["doctor"]), async (req, res) => {
     const { patientUserId, medicineId, dosage, durationDays } = req.body || {};
-    if (!patientUserId || !medicineId || !dosage || !durationDays) {
+    const duration = safeNumber(durationDays);
+    if (!isNonEmptyString(patientUserId) || !isNonEmptyString(medicineId) || !isNonEmptyString(dosage) || duration === null) {
       return res.status(400).json({ error: "bad_request", message: "patientUserId/medicineId/dosage/durationDays required" });
     }
 
@@ -270,7 +320,7 @@ async function start() {
       patientIdToken: patientToken,
       medicineId,
       dosage,
-      durationDays: Number(durationDays),
+      durationDays: duration,
       issuedAt,
       expiry,
       nonce,
@@ -323,7 +373,7 @@ async function start() {
   // --- Batches ---
   app.post("/batches", requireAuth, requireRole(["manufacturer"]), async (req, res) => {
     const { batchId, lot, expiry, certificateHash } = req.body || {};
-    if (!batchId || !lot || !expiry || !certificateHash) {
+    if (!isNonEmptyString(batchId) || !isNonEmptyString(lot) || !isNonEmptyString(expiry) || !isNonEmptyString(certificateHash)) {
       return res.status(400).json({ error: "bad_request", message: "batchId/lot/expiry/certificateHash required" });
     }
 

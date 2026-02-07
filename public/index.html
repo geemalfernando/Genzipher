@@ -179,14 +179,5 @@
     </main>
 
     <script src="app.js" type="module"></script>
-    <script>
-      // Set a sensible default expiry date in the manufacturer form.
-      const el = document.getElementById("batch_expiry");
-      if (el && !el.value) {
-        const d = new Date();
-        d.setFullYear(d.getFullYear() + 1);
-        el.value = d.toISOString().slice(0, 10);
-      }
-    </script>
   </body>
 </html>
