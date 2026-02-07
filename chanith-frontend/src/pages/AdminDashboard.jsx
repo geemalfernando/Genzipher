@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../utils/AuthContext'
 import { api, toast } from '../utils/api'
+import AlertsList from '../components/AlertsList'
 import '../styles/PatientDashboard.css'
 
 export default function AdminDashboard() {
@@ -898,53 +899,7 @@ export default function AdminDashboard() {
 	                    {(analytics.alerts || []).length === 0 ? (
 	                      <p className="empty-state" style={{ marginTop: '1rem' }}>No alerts in this window</p>
 	                    ) : (
-	                      <div style={{ overflowX: 'auto', marginTop: '1rem' }}>
-	                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-	                          <thead>
-	                            <tr style={{ borderBottom: '2px solid var(--healthcare-border)' }}>
-	                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Time</th>
-	                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Severity</th>
-	                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Title</th>
-	                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Actor</th>
-	                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Type</th>
-	                              <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Action</th>
-	                            </tr>
-	                          </thead>
-	                          <tbody>
-	                            {(analytics.alerts || []).slice(0, 25).map((a, idx) => {
-	                              const sev = String(a.severity || 'info').toLowerCase()
-	                              const sevColor = sev === 'critical' ? '#b00020' : sev === 'high' ? '#e55353' : sev === 'medium' ? '#f5a623' : sev === 'low' ? '#6c757d' : '#3b82f6'
-	                              const actor = a.actor || {}
-	                              const actorText = actor.username || actor.userId || actor.identifier || '—'
-	                              return (
-	                                <tr key={idx} style={{ borderBottom: '1px solid var(--healthcare-border)' }}>
-	                                  <td style={{ padding: '0.75rem', fontSize: '0.875rem', color: 'var(--healthcare-text-muted)' }}>
-	                                    {a.ts ? new Date(a.ts).toLocaleString() : '—'}
-	                                  </td>
-	                                  <td style={{ padding: '0.75rem', fontSize: '0.875rem' }}>
-	                                    <span style={{ display: 'inline-block', padding: '0.15rem 0.5rem', borderRadius: '999px', background: `${sevColor}22`, color: sevColor, fontWeight: 700, fontSize: '0.75rem' }}>
-	                                      {sev.toUpperCase()}
-	                                    </span>
-	                                  </td>
-	                                  <td style={{ padding: '0.75rem', fontSize: '0.875rem' }}>{a.title || '—'}</td>
-	                                  <td style={{ padding: '0.75rem', fontSize: '0.875rem' }}>
-	                                    <div style={{ fontWeight: 600 }}>{actorText}</div>
-	                                    {actor.role ? <div style={{ fontSize: '0.8125rem', color: 'var(--healthcare-text-muted)' }}>{actor.role}</div> : null}
-	                                  </td>
-	                                  <td style={{ padding: '0.75rem', fontFamily: 'monospace', fontSize: '0.8125rem', color: 'var(--healthcare-text-muted)' }}>
-	                                    {a.type || '—'}
-	                                  </td>
-	                                  <td style={{ padding: '0.75rem' }}>
-	                                    <button className="btn-secondary btn-sm" type="button" onClick={() => investigateAlert(a)} disabled={loading}>
-	                                      Investigate
-	                                    </button>
-	                                  </td>
-	                                </tr>
-	                              )
-	                            })}
-	                          </tbody>
-	                        </table>
-	                      </div>
+	                      <AlertsList alerts={analytics.alerts || []} limit={25} onInvestigate={investigateAlert} />
 	                    )}
 	                  </div>
 

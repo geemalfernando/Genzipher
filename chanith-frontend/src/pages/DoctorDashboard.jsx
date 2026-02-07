@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../utils/AuthContext'
 import { api, toast } from '../utils/api'
+import AlertsList from '../components/AlertsList'
 import '../styles/PatientDashboard.css'
 
 export default function DoctorDashboard() {
@@ -431,6 +432,21 @@ export default function DoctorDashboard() {
 
             <div className="healthcare-card" style={{ marginBottom: '2rem' }}>
               <h2>Doctor: Sign Prescription</h2>
+
+              <div className="healthcare-card" style={{ marginTop: '1rem', background: 'var(--healthcare-bg)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                  <div>
+                    <h3 style={{ marginTop: 0, marginBottom: '0.25rem' }}>Alert Center</h3>
+                    <p style={{ margin: 0, color: 'var(--healthcare-text-muted)' }}>
+                      High-signal security events related to your activity.
+                    </p>
+                  </div>
+                  <button className="btn-secondary btn-sm" type="button" onClick={loadDoctorDashboard} disabled={loading}>
+                    Refresh
+                  </button>
+                </div>
+                <AlertsList alerts={alerts} limit={10} showType={false} compact />
+              </div>
               
               <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
                 <div className="form-group" style={{ flex: '1', minWidth: '200px' }}>
