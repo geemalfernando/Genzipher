@@ -1872,6 +1872,13 @@ export async function startServer() {
   });
 }
 
+// Vercel/Serverless handler compatibility:
+// Some deployments may point directly at `src/server.js` as the entrypoint and expect a default export.
+export default async function handler(req, res) {
+  const app = await getApp();
+  return app(req, res);
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename);
 if (__isMain) {
