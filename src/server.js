@@ -368,6 +368,12 @@ function looksLikeDeviceId(value) {
   return /^[a-zA-Z0-9_.:-]+$/.test(s);
 }
 
+function isMongoDuplicateKeyError(err) {
+  const code = err?.code;
+  const name = err?.name;
+  return code === 11000 || name === "MongoServerError" || name === "MongoBulkWriteError";
+}
+
 function getRequestDeviceId(req) {
   const header = req.header("x-gz-device-id");
   const body = req.body?.deviceId;
@@ -1396,8 +1402,14 @@ async function buildApp() {
       });
     }
 
-    const existing = await User.findOne({ username }).lean();
-    if (existing) return res.status(409).json({ error: "username_taken" });
+    const normalizedEmail = looksLikeEmail(email) ? String(email).trim().toLowerCase() : null;
+
+    const existing = await User.findOne({ $or: [{ username }, ...(normalizedEmail ? [{ email: normalizedEmail }] : [])] }).lean();
+    if (existing) {
+      if (existing.username === username) return res.status(409).json({ error: "username_taken" });
+      if (normalizedEmail && existing.email === normalizedEmail) return res.status(409).json({ error: "email_taken" });
+      return res.status(409).json({ error: "conflict" });
+    }
 
     const patientId = randomId("u_patient");
     await RegistrationAttempt.create({ ip, patientId, ts: new Date() });
@@ -1413,24 +1425,34 @@ async function buildApp() {
 
     const normalizedDeviceId = looksLikeDeviceId(deviceId) ? String(deviceId).trim() : null;
 
-    await User.create({
-      id: patientId,
-      username,
-      role: "patient",
-      password: hashPasswordScrypt(password),
-      status: "active",
-      email: looksLikeEmail(email) ? String(email).trim().toLowerCase() : `${username}@demo.local`,
-      mfaEnabled: false,
-      mfaMethod: "NONE",
-      createdFromDeviceId: normalizedDeviceId,
-    });
-    await PatientProfile.create({
-      patientId,
-      status: score >= 80 ? "VERIFIED" : "PENDING",
-      trustScore: score,
-      trustExplainTop3: top3,
-      lastKnownGeo: isNonEmptyString(geo) ? geo : null,
-    });
+    try {
+      await User.create({
+        id: patientId,
+        username,
+        role: "patient",
+        password: hashPasswordScrypt(password),
+        status: "active",
+        email: normalizedEmail || `${username}@demo.local`,
+        mfaEnabled: false,
+        mfaMethod: "NONE",
+        createdFromDeviceId: normalizedDeviceId,
+      });
+      await PatientProfile.create({
+        patientId,
+        status: score >= 80 ? "VERIFIED" : "PENDING",
+        trustScore: score,
+        trustExplainTop3: top3,
+        lastKnownGeo: isNonEmptyString(geo) ? geo : null,
+      });
+    } catch (err) {
+      if (isMongoDuplicateKeyError(err)) {
+        const msg = String(err?.message || "");
+        if (msg.includes("username")) return res.status(409).json({ error: "username_taken" });
+        if (msg.includes("email")) return res.status(409).json({ error: "email_taken" });
+        return res.status(409).json({ error: "conflict" });
+      }
+      throw err;
+    }
 
     // If the patient is PENDING, auto-issue a one-time verification code (demo-friendly).
     let verification = null;
@@ -1720,7 +1742,8 @@ async function buildApp() {
 
   app.post("/biometric/verify/start", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
     const rpId = computeRpId({ req });
-    const creds = await Biometric.find({ userId: req.auth.sub, isActive: true }, { _id: 0, credentialIdB64u: 1 }).lean();
+    const credsRaw = await Biometric.find({ userId: req.auth.sub, isActive: true }, { _id: 0, credentialIdB64u: 1 }).lean();
+    const creds = (credsRaw || []).filter((c) => isNonEmptyString(c?.credentialIdB64u));
     if (!creds.length) return res.status(404).json({ error: "no_biometrics_enrolled" });
 
     const challenge = crypto.randomBytes(32).toString("base64url");
@@ -1735,7 +1758,7 @@ async function buildApp() {
 
     res.json({
       challenge,
-      allowCredentials: creds.map((c) => ({ type: "public-key", id: c.credentialIdB64u })),
+      allowCredentials: creds.map((c) => ({ type: "public-key", id: String(c.credentialIdB64u) })),
       timeout: 60000,
       rpId,
       userVerification: "required",
@@ -1812,6 +1835,45 @@ async function buildApp() {
     const code = crypto.randomBytes(4).toString("hex").toUpperCase(); // 8 chars
     const codeHash = sha256Base64url(`clinic:${code}:${JWT_SECRET}`);
     const expiresAt = new Date(Date.now() + mins * 60 * 1000);
+
+    let delivery = "console";
+    let sentTo = null;
+    let warning = null;
+    const wantsEmail = Boolean(sendEmail);
+    if (wantsEmail) {
+      if (!isSmtpEnabled()) {
+        warning = "SMTP not configured; generated code is shown in the admin UI (console delivery).";
+      } else if (!isNonEmptyString(patientId)) {
+        warning = "patientId required to email the code; generated code is shown in the admin UI (console delivery).";
+      } else {
+        const patientUser = await User.findOne({ id: patientId, role: "patient" }).lean();
+        if (!patientUser) {
+          warning = "Patient not found; generated code is shown in the admin UI (console delivery).";
+        } else if (!looksLikeEmail(patientUser.email) || String(patientUser.email).endsWith("@demo.local")) {
+          warning = "Patient has no real email; generated code is shown in the admin UI (console delivery).";
+        } else {
+          const verify = await verifySmtpConnection();
+          if (!verify.ok) {
+            warning = "SMTP verification failed; generated code is shown in the admin UI (console delivery).";
+          } else {
+            try {
+              await sendClinicCodeEmail({
+                to: patientUser.email,
+                code,
+                expiresAtIso: expiresAt.toISOString(),
+              });
+              delivery = "email";
+              sentTo = patientUser.email;
+            } catch (err) {
+              // eslint-disable-next-line no-console
+              console.error(err);
+              warning = "Email send failed; generated code is shown in the admin UI (console delivery).";
+            }
+          }
+        }
+      }
+    }
+
     await ClinicCode.create({
       codeHash,
       patientId: isNonEmptyString(patientId) ? patientId : null,
@@ -1820,46 +1882,7 @@ async function buildApp() {
       usedByPatientId: null,
     });
 
-    let delivery = "console";
-    let sentTo = null;
-    if (sendEmail) {
-      if (!isSmtpEnabled()) {
-        return res.status(400).json({ error: "smtp_not_configured" });
-      }
-      const verify = await verifySmtpConnection();
-      if (!verify.ok) return res.status(400).json({ error: verify.error, detail: verify.detail });
-      if (!isNonEmptyString(patientId)) {
-        return res.status(400).json({ error: "patientId_required_for_email" });
-      }
-      const patientUser = await User.findOne({ id: patientId, role: "patient" }).lean();
-      if (!patientUser) return res.status(404).json({ error: "patient_not_found" });
-      if (!looksLikeEmail(patientUser.email) || String(patientUser.email).endsWith("@demo.local")) {
-        return res.status(400).json({ error: "patient_email_missing" });
-      }
-      try {
-        await sendClinicCodeEmail({
-          to: patientUser.email,
-          code,
-          expiresAtIso: expiresAt.toISOString(),
-        });
-        delivery = "email";
-        sentTo = patientUser.email;
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(err);
-        return res.status(500).json({
-          error: "email_send_failed",
-          detail: {
-            name: err?.name,
-            code: err?.code,
-            message: err?.message,
-            responseCode: err?.responseCode,
-            response: err?.response,
-            command: err?.command,
-          },
-        });
-      }
-    } else {
+    if (delivery === "console") {
       // eslint-disable-next-line no-console
       console.log(`[CLINIC_CODE] patientId=${isNonEmptyString(patientId) ? patientId : "unbound"} code=${code} expiresAt=${expiresAt.toISOString()}`);
     }
@@ -1882,6 +1905,7 @@ async function buildApp() {
       sentTo,
       expiresAt: expiresAt.toISOString(),
       boundPatientId: isNonEmptyString(patientId) ? patientId : null,
+      ...(warning ? { warning } : {}),
     });
   }));
 

@@ -1,12 +1,50 @@
 function computeApiBase() {
-  const explicit = typeof window.GZ_API_BASE === "string" ? window.GZ_API_BASE.trim() : "";
-  const stored = (localStorage.getItem("gz_api_base") || "").trim();
-  const isFirebaseHost =
-    window.location.hostname.endsWith(".web.app") || window.location.hostname.endsWith(".firebaseapp.com");
-  const auto = isFirebaseHost ? "https://genzipher.vercel.app" : "";
-  const base = explicit || stored || auto || "";
-  window.GZ_API_BASE = base;
-  return base;
+  const normalize = (v) => {
+    if (typeof v !== "string") return "";
+    const s = v.trim();
+    if (!s) return "";
+    return s.endsWith("/") ? s.slice(0, -1) : s;
+  };
+
+  const host = window.location.hostname;
+  const isFirebaseHost = host.endsWith(".web.app") || host.endsWith(".firebaseapp.com");
+
+  const coerce = (base) => {
+    const b = normalize(base);
+    if (!b) return "";
+    // If someone set the Vercel origin without /api, fix it automatically for this app.
+    if (b === "https://genzipher.vercel.app") return "https://genzipher.vercel.app/api";
+    // If we're on Firebase and base is the Vercel origin, force /api.
+    if (isFirebaseHost && b.endsWith(".vercel.app") && !b.endsWith("/api")) return `${b}/api`;
+    return b;
+  };
+
+  const explicit = coerce(typeof window.GZ_API_BASE === "string" ? window.GZ_API_BASE : "");
+  const stored = coerce(localStorage.getItem("gz_api_base") || "");
+
+  if (explicit) {
+    localStorage.setItem("gz_api_base", explicit);
+    window.GZ_API_BASE = explicit;
+    return explicit;
+  }
+  if (stored) {
+    window.GZ_API_BASE = stored;
+    return stored;
+  }
+
+  const isVercelHost = host.endsWith(".vercel.app");
+
+  // Defaults:
+  // - Firebase Hosting: backend lives on Vercel under /api
+  // - Vercel-hosted UI: call same-origin /api
+  const auto = isFirebaseHost
+    ? "https://genzipher.vercel.app/api"
+    : isVercelHost
+      ? `${window.location.origin}/api`
+      : "";
+
+  window.GZ_API_BASE = auto;
+  return auto;
 }
 
 const API_BASE = computeApiBase();
@@ -336,6 +374,7 @@ async function api(path, { method = "GET", body } = {}) {
   const deviceId = getDeviceId();
   let csrf = getCsrfToken();
   const needsCsrf = method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+  const normalizedPath = typeof path === "string" && path.startsWith("/") ? path : `/${String(path || "")}`;
 
   // If we're about to send a state-changing request and we have no CSRF token yet,
   // fetch one on-demand to avoid "csrf_missing" race conditions right after login.
@@ -357,7 +396,7 @@ async function api(path, { method = "GET", body } = {}) {
       // ignore (backend may have CSRF disabled)
     }
   }
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${API_BASE}${normalizedPath}`, {
     method,
     headers: {
       ...(body ? { "content-type": "application/json" } : {}),
@@ -383,6 +422,50 @@ async function api(path, { method = "GET", body } = {}) {
     throw new Error(msg);
   }
   return data;
+}
+
+function renderLoginDevicesReadable(out) {
+  const host = $("loginDevicesReadable");
+  if (!host) return;
+  host.innerHTML = "";
+
+  const user = out?.user || {};
+  const devices = Array.isArray(out?.devices) ? out.devices : [];
+
+  const header = document.createElement("div");
+  header.className = "text-small color-fg-muted";
+  header.textContent = `Created from: ${user.createdFromDeviceId || "—"} • Last login: ${user.lastLoginDeviceId || "—"} (${user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : "—"})`;
+  host.appendChild(header);
+
+  const list = document.createElement("ul");
+  list.className = "mt-2";
+
+  if (!devices.length) {
+    const li = document.createElement("li");
+    li.className = "text-small color-fg-muted";
+    li.textContent = "No login devices recorded yet.";
+    list.appendChild(li);
+  } else {
+    for (const d of devices) {
+      const li = document.createElement("li");
+      const first = d.firstSeenAt ? new Date(d.firstSeenAt).toLocaleString() : "—";
+      const last = d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : "—";
+      const verified = d.verifiedAt ? "VERIFIED" : (d.blockedAt ? "BLOCKED" : "SEEN");
+      li.className = "text-small";
+      li.textContent = `${d.deviceId} • ${verified} • first ${first} • last ${last}`;
+      list.appendChild(li);
+    }
+  }
+
+  host.appendChild(list);
+}
+
+async function loadLoginDevices() {
+  const out = await api("/auth/login-devices");
+  const jsonEl = $("loginDevices_out");
+  if (jsonEl) jsonEl.value = pretty(out);
+  renderLoginDevicesReadable(out);
+  return out;
 }
 
 function showRole(role) {
@@ -525,6 +608,11 @@ async function updateAuthUi() {
     if (auth.role === "patient") {
       await refreshPatientProfile();
       await loadDoctorsForBooking();
+      try {
+        await Promise.all([loadLoginDevices(), loadTrustedDevices()]);
+      } catch {
+        // ignore; user can manually refresh
+      }
     } else if (auth.role === "pharmacy") {
       // Check biometric verification status
       try {
@@ -596,6 +684,11 @@ async function onLogin(e) {
     setToken(out.token);
     toast("Logged in", "success");
   } catch (err) {
+    $("pr_out").value = pretty({ ok: false, error: err.message });
+    if (String(err.message || "").startsWith("username_taken")) {
+      const base = $("pr_username").value.trim() || "newpatient";
+      $("pr_username").value = `${base}${Math.floor(100 + Math.random() * 900)}`;
+    }
     toast(err.message, "error");
   }
 }
@@ -1109,6 +1202,7 @@ async function onIssueClinicCode(e) {
     $("cc_expiry").textContent = out.expiresAt || "—";
     $("cc_delivery").textContent = out.delivery || "—";
     $("cc_sentTo").textContent = out.sentTo || "—";
+    if (out.warning) toast(out.warning, "warning");
     toast("Clinic code generated", "success");
   } catch (err) {
     toast(err.message, "error");
@@ -1238,6 +1332,7 @@ async function onPatientEnableMfa(e) {
     const out = await api("/patients/enable-mfa", { method: "POST", body: { method: "EMAIL_OTP", ...(email ? { email } : {}) } });
     toast(`MFA enabled: ${out.method}`, "success");
     await refreshPatientProfile();
+    await loadTrustedDevices();
   } catch (err) {
     toast(err.message, "error");
   }
@@ -1281,7 +1376,7 @@ async function loadTrustedDevices() {
   if (!out.devices?.length) {
     const opt = document.createElement("option");
     opt.value = "";
-    opt.textContent = "No trusted devices";
+    opt.textContent = "No trusted devices (verify an OTP and check “Trust this device”)";
     select.appendChild(opt);
     return;
   }
@@ -1441,6 +1536,10 @@ async function handlePharmacyBiometricEnrollment() {
     statusEl.textContent = "Requesting enrollment challenge...";
     const enrollmentOptions = await api("/biometric/enroll/start", { method: "POST" });
 
+    if (!enrollmentOptions?.challenge || !enrollmentOptions?.user?.id) {
+      throw new Error("Server returned invalid enrollment options");
+    }
+
     // 2) Convert base64url challenge to ArrayBuffer
     const challengeBuffer = Uint8Array.from(atob(enrollmentOptions.challenge.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
     const userIdBuffer = Uint8Array.from(atob(enrollmentOptions.user.id.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
@@ -1536,14 +1635,23 @@ async function handlePharmacyBiometricVerification() {
     statusEl.textContent = "Requesting verification challenge...";
     const verificationOptions = await api("/biometric/verify/start", { method: "POST" });
 
+    if (!verificationOptions?.challenge || !Array.isArray(verificationOptions?.allowCredentials)) {
+      throw new Error("Server returned invalid verification options");
+    }
+
     // 3) Convert base64url challenge to ArrayBuffer
     const challengeBuffer = Uint8Array.from(atob(verificationOptions.challenge.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
     
     // 4) Convert allowCredentials
-    const allowCredentials = verificationOptions.allowCredentials.map(cred => ({
-      id: Uint8Array.from(atob(cred.id.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)),
-      type: cred.type,
-    }));
+    const allowCredentials = verificationOptions.allowCredentials
+      .filter((cred) => cred && typeof cred.id === "string" && cred.id.length > 0)
+      .map(cred => ({
+        id: Uint8Array.from(atob(cred.id.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)),
+        type: cred.type,
+      }));
+    if (allowCredentials.length === 0) {
+      throw new Error("No enrolled biometric credentials found. Please enroll again.");
+    }
 
     // 5) Prepare assertion options
     const publicKeyCredentialRequestOptions = {
@@ -1755,6 +1863,28 @@ function wire() {
   $("patientMfaForm").addEventListener("submit", onPatientEnableMfa);
   $("mfaDisableRequestBtn").addEventListener("click", onMfaDisableRequest);
   $("mfaDisableConfirmBtn").addEventListener("click", onMfaDisableConfirm);
+  $("loginDevicesRefreshBtn")?.addEventListener("click", async () => {
+    try {
+      await loadLoginDevices();
+      toast("Login devices loaded", "success");
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  });
+  $("loginDevicesToggleJsonBtn")?.addEventListener("click", () => {
+    const ta = $("loginDevices_out");
+    if (!ta) return;
+    const showing = !ta.hidden;
+    ta.hidden = showing;
+    const btn = $("loginDevicesToggleJsonBtn");
+    if (btn) btn.textContent = showing ? "Show JSON" : "Hide JSON";
+  });
+  $("loginDevicesCopyJsonBtn")?.addEventListener("click", async () => {
+    const ta = $("loginDevices_out");
+    const text = ta?.value || "";
+    await navigator.clipboard.writeText(text);
+    toast("Copied login devices JSON", "success");
+  });
   $("trustedRefreshBtn").addEventListener("click", onTrustedRefresh);
   $("trustedRemoveBtn").addEventListener("click", onTrustedRemoveRequest);
   $("trustedRemoveConfirmBtn").addEventListener("click", onTrustedRemoveConfirm);

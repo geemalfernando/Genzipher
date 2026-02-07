@@ -1,4 +1,27 @@
-const API_BASE = window.GZ_API_BASE || "";
+function normalizeApiBase(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+}
+
+function computeApiBase() {
+  const host = window.location.hostname;
+  const isFirebaseHost = host.endsWith(".web.app") || host.endsWith(".firebaseapp.com");
+  const isVercelHost = host.endsWith(".vercel.app");
+
+  const explicit = normalizeApiBase(typeof window.GZ_API_BASE === "string" ? window.GZ_API_BASE : "");
+  if (explicit) return explicit === "https://genzipher.vercel.app" ? "https://genzipher.vercel.app/api" : explicit;
+
+  const stored = normalizeApiBase(localStorage.getItem("gz_api_base") || "");
+  if (stored) return stored === "https://genzipher.vercel.app" ? "https://genzipher.vercel.app/api" : stored;
+
+  if (isFirebaseHost) return "https://genzipher.vercel.app/api";
+  if (isVercelHost) return `${window.location.origin}/api`;
+  return "";
+}
+
+const API_BASE = computeApiBase();
 
 function $(id) {
   return document.getElementById(id);
@@ -29,7 +52,8 @@ function getDeviceId() {
 }
 
 async function api(path, { method = "GET", body } = {}) {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const normalizedPath = typeof path === "string" && path.startsWith("/") ? path : `/${String(path || "")}`;
+  const res = await fetch(`${API_BASE}${normalizedPath}`, {
     method,
     headers: {
       ...(body ? { "content-type": "application/json" } : {}),
@@ -69,4 +93,3 @@ async function onSubmit(e) {
 }
 
 $("ps_form").addEventListener("submit", onSubmit);
-
