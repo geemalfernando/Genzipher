@@ -634,15 +634,46 @@ async function buildApp() {
   // Avoid noisy 404s for default browser icon requests in hosted environments.
   app.get(["/favicon.ico", "/favicon.png"], (req, res) => res.status(204).end());
 
-  // If the backend is hosted separately from the frontend, redirect browser visits to `/`
+  // If the backend is hosted separately from the frontend, redirect browser navigations
   // to the configured public URL (e.g. Firebase Hosting). Keep API routes unaffected.
-  app.get("/", (req, res, next) => {
+  const apiPrefixes = [
+    "/health",
+    "/auth",
+    "/patients",
+    "/clinic",
+    "/admin",
+    "/audit",
+    "/analytics",
+    "/demo",
+    "/prescriptions",
+    "/batches",
+    "/dispense",
+    "/pharmacist",
+    "/biometric",
+    "/pharmacy",
+    "/appointments",
+    "/doctor",
+    "/vitals",
+  ];
+  app.use((req, res, next) => {
+    const method = String(req.method || "").toUpperCase();
+    if (method !== "GET" && method !== "HEAD") return next();
+
     const accept = req.header("accept") || "";
     if (!accept.includes("text/html")) return next();
+
+    const pathOnly = req.path || "/";
+    const isApi =
+      apiPrefixes.includes(pathOnly) || apiPrefixes.some((p) => pathOnly.startsWith(`${p}/`));
+    if (isApi) return next();
+
     const current = normalizeOrigin(`${req.protocol}://${req.get("host")}`);
     const pub = normalizeOrigin(PUBLIC_BASE_URL);
-    if (pub && current && pub !== current) return res.redirect(302, `${pub}/`);
-    return next();
+    if (!pub || !current || pub === current) return next();
+
+    const original = String(req.originalUrl || "/");
+    const target = `${pub}${original.startsWith("/") ? original : `/${original}`}`;
+    return res.redirect(302, target);
   });
 
   app.use("/", express.static(publicDir));
