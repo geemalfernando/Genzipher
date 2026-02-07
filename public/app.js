@@ -1,4 +1,15 @@
-const API_BASE = window.GZ_API_BASE || "";
+function computeApiBase() {
+  const explicit = typeof window.GZ_API_BASE === "string" ? window.GZ_API_BASE.trim() : "";
+  const stored = (localStorage.getItem("gz_api_base") || "").trim();
+  const isFirebaseHost =
+    window.location.hostname.endsWith(".web.app") || window.location.hostname.endsWith(".firebaseapp.com");
+  const auto = isFirebaseHost ? "https://genzipher.vercel.app" : "";
+  const base = explicit || stored || auto || "";
+  window.GZ_API_BASE = base;
+  return base;
+}
+
+const API_BASE = computeApiBase();
 
 function $(id) {
   return document.getElementById(id);
@@ -494,9 +505,9 @@ async function updateAuthUi() {
 async function checkHealth() {
   try {
     await api("/health");
-    setStatus(true, "API reachable");
+    setStatus(true, `API reachable (${API_BASE || "same-origin"})`);
   } catch {
-    setStatus(false, "API not reachable (run server)");
+    setStatus(false, `API not reachable (${API_BASE || "same-origin"})`);
   }
 }
 
