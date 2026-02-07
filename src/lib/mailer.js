@@ -89,3 +89,16 @@ export async function sendClinicCodeEmail({ to, code, expiresAtIso }) {
     text: `Your clinic verification code is: ${code}\n\nIt expires at: ${expiresAtIso}\n\nIf you did not request this, you can ignore this email.`,
   });
 }
+
+export async function sendMagicLinkEmail({ to, verifyUrl, expiresAtIso }) {
+  const transporter = getMailer();
+  const from = (process.env.FROM_EMAIL || process.env.SMTP_USER || "").trim();
+  if (!from) throw new Error("FROM_EMAIL not set");
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: "Verify your new device login",
+    text: `We detected a login from a new device.\n\nVerify this device by clicking:\n${verifyUrl}\n\nThis link expires at: ${expiresAtIso}\n\nIf this wasn't you, ignore this email.`,
+  });
+}

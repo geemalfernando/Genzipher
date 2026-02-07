@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { stableStringify } from "./stableJson.js";
+import { base64urlDecodeToBuffer } from "./base64url.js";
 
 export function sha256Base64url(input) {
   const buffer = Buffer.isBuffer(input) ? input : Buffer.from(String(input));
@@ -40,20 +41,26 @@ export function signObjectEd25519({ obj, privateKeyPem }) {
 
 export function verifyObjectEd25519({ obj, signatureB64url, publicKeyPem }) {
   const message = Buffer.from(stableStringify(obj));
-  const signature = Buffer.from(
-    signatureB64url.replaceAll("-", "+").replaceAll("_", "/"),
-    "base64"
-  );
+  const signature = base64urlDecodeToBuffer(signatureB64url);
   return crypto.verify(null, message, publicKeyPem, signature);
 }
 
 export function verifyObjectEs256({ obj, signatureB64url, publicKeyPem }) {
   const message = Buffer.from(stableStringify(obj));
-  const signature = Buffer.from(
-    signatureB64url.replaceAll("-", "+").replaceAll("_", "/"),
-    "base64"
+  const signature = base64urlDecodeToBuffer(signatureB64url);
+
+  // Browser crypto APIs and libraries vary in ECDSA signature format:
+  // - DER encoded (ASN.1 SEQUENCE)
+  // - IEEE-P1363 (raw r||s) for P-256 => 64 bytes
+  const derOk = crypto.verify("sha256", message, publicKeyPem, signature);
+  if (derOk) return true;
+
+  return crypto.verify(
+    "sha256",
+    message,
+    { key: publicKeyPem, dsaEncoding: "ieee-p1363" },
+    signature
   );
-  return crypto.verify("sha256", message, publicKeyPem, signature);
 }
 
 export function aes256gcmEncrypt({ plaintext, keyB64 }) {

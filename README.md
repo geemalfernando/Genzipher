@@ -149,6 +149,15 @@ By default OTP prints to the server terminal logs. To send real OTP emails, set 
 
 Note: Gmail usually requires 2FA + an App Password (regular account password won’t work).
 
+## New device verification (automatic)
+
+If SMTP is configured, a login from a new device for patients/doctors triggers an **email verification link**:
+
+- Login from device A → allowed.
+- Login from device B → backend emails a link; user clicks it → the app auto-verifies the device and logs in.
+
+This uses `PUBLIC_BASE_URL` to build the link.
+
 ## “Don’t ask OTP again” (trusted device)
 
 After a successful OTP verification, check “Trust this device” in the OTP box. For the next 30 days, logins from the same browser/device will skip OTP (still requires password).

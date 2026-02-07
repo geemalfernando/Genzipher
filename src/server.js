@@ -17,6 +17,8 @@ import { ClinicCode } from "./db/models/ClinicCode.js";
 import { RegistrationAttempt } from "./db/models/RegistrationAttempt.js";
 import { OtpRequest } from "./db/models/OtpRequest.js";
 import { TrustedDevice } from "./db/models/TrustedDevice.js";
+import { UserLoginDevice } from "./db/models/UserLoginDevice.js";
+import { MagicLinkRequest } from "./db/models/MagicLinkRequest.js";
 import { Prescription } from "./db/models/Prescription.js";
 import { Batch } from "./db/models/Batch.js";
 import { Dispense } from "./db/models/Dispense.js";
@@ -36,13 +38,20 @@ import {
 } from "./lib/crypto.js";
 import { jwtSignHs256, jwtVerifyHs256 } from "./lib/jwt.js";
 import { computeAuditHash } from "./lib/audit.js";
-import { isSmtpEnabled, sendClinicCodeEmail, sendOtpEmail, verifySmtpConnection } from "./lib/mailer.js";
+import { isSmtpEnabled, sendClinicCodeEmail, sendMagicLinkEmail, sendOtpEmail, verifySmtpConnection } from "./lib/mailer.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 const DEMO_MFA_CODE = process.env.DEMO_MFA_CODE || "123456";
 const MFA_REQUIRED_ROLES = new Set(["doctor", "pharmacy", "manufacturer", "admin"]);
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
+const DEVICE_STEP_UP_ROLES = new Set(
+  (process.env.DEVICE_STEP_UP_ROLES || "patient,doctor")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`).trim();
 
 function asyncRoute(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -190,6 +199,8 @@ async function ensureIndexes() {
     RegistrationAttempt.init(),
     OtpRequest.init(),
     TrustedDevice.init(),
+    UserLoginDevice.init(),
+    MagicLinkRequest.init(),
     Prescription.init(),
     Batch.init(),
     Dispense.init(),
@@ -244,11 +255,42 @@ function hashRememberToken(token) {
   return sha256Base64url(`remember:${token}:${JWT_SECRET}`);
 }
 
+function hashMagicToken(token) {
+  return sha256Base64url(`magic:${token}:${JWT_SECRET}`);
+}
+
 function looksLikeDeviceId(value) {
   if (!isNonEmptyString(value)) return false;
   const s = value.trim();
   if (s.length < 8 || s.length > 128) return false;
   return /^[a-zA-Z0-9_.:-]+$/.test(s);
+}
+
+async function recordLoginSuccess({ userId, deviceId, ip = null, userAgent = null }) {
+  if (!looksLikeDeviceId(deviceId)) return;
+  const now = new Date();
+  const ipNorm = isNonEmptyString(ip) ? String(ip).slice(0, 128) : null;
+  const uaNorm = isNonEmptyString(userAgent) ? String(userAgent).slice(0, 512) : null;
+  await Promise.all([
+    User.updateOne(
+      { id: userId },
+      { $set: { lastLoginAt: now, lastLoginDeviceId: String(deviceId).trim() } }
+    ),
+    UserLoginDevice.updateOne(
+      { userId, deviceId: String(deviceId).trim() },
+      {
+        $setOnInsert: {
+          id: randomId("ulogdev"),
+          userId,
+          deviceId: String(deviceId).trim(),
+          firstSeenAt: now,
+          firstIp: ipNorm,
+        },
+        $set: { lastSeenAt: now, blockedAt: null, lastIp: ipNorm, lastUserAgent: uaNorm },
+      },
+      { upsert: true }
+    ),
+  ]);
 }
 
 async function issueOtpRequest({ user, purpose, context = null }) {
@@ -310,7 +352,7 @@ async function start() {
           "default-src": ["'self'"],
           "script-src": ["'self'"],
           "style-src": ["'self'", "https://unpkg.com", "'unsafe-inline'"],
-          "img-src": ["'self'"],
+          "img-src": ["'self'", "data:"],
           "connect-src": ["'self'"],
           "object-src": ["'none'"],
           "base-uri": ["'self'"],
@@ -386,6 +428,126 @@ async function start() {
       }
     }
 
+    // Step-up OTP for new device (patient/doctor by default)
+    if (looksLikeDeviceId(deviceId) && DEVICE_STEP_UP_ROLES.has(user.role)) {
+      const normalizedDeviceId = String(deviceId).trim();
+      const ip = getClientIp(req);
+      const userAgent = req.header("user-agent") || null;
+      const existing = await UserLoginDevice.findOne({ userId: user.id, deviceId: normalizedDeviceId }).lean();
+      if (existing?.blockedAt) return res.status(403).json({ error: "device_blocked" });
+
+      if (!existing || !existing.verifiedAt) {
+        // Bootstrap rule: allow the *first* verified device without step-up,
+        // then require step-up when a *new* device appears later.
+        const anyVerified = await UserLoginDevice.findOne({ userId: user.id, verifiedAt: { $ne: null } }).lean();
+        if (!anyVerified) {
+          const now = new Date();
+          await UserLoginDevice.updateOne(
+            { userId: user.id, deviceId: normalizedDeviceId },
+            {
+              $setOnInsert: {
+                id: randomId("ulogdev"),
+                userId: user.id,
+                deviceId: normalizedDeviceId,
+                firstSeenAt: now,
+                firstIp: isNonEmptyString(ip) ? String(ip).slice(0, 128) : null,
+              },
+              $set: {
+                lastSeenAt: now,
+                verifiedAt: now,
+                blockedAt: null,
+                lastIp: isNonEmptyString(ip) ? String(ip).slice(0, 128) : null,
+                lastUserAgent: isNonEmptyString(userAgent) ? String(userAgent).slice(0, 512) : null,
+              },
+            },
+            { upsert: true }
+          );
+          await auditAppend({
+            actor: { userId: user.id, role: user.role, username: user.username },
+            action: "auth.first_device_auto_verified",
+            details: { deviceId: normalizedDeviceId },
+          });
+        } else if (isSmtpEnabled()) {
+          if (!looksLikeEmail(user.email) || String(user.email).endsWith("@demo.local")) {
+            return res.status(400).json({
+              error: "mfa_email_missing",
+              message: "Set a real email for this user to verify login from a new device (SMTP is enabled).",
+            });
+          }
+
+          const rawToken = crypto.randomBytes(32).toString("base64url");
+          const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+          const id = randomId("ml");
+          await MagicLinkRequest.create({
+            id,
+            userId: user.id,
+            purpose: "NEW_DEVICE",
+            tokenHash: hashMagicToken(rawToken),
+            expiresAt,
+            usedAt: null,
+            sentTo: user.email,
+            context: { deviceId: normalizedDeviceId },
+          });
+          const verifyUrl = `${PUBLIC_BASE_URL}/?mlt=${encodeURIComponent(rawToken)}`;
+          await sendMagicLinkEmail({ to: user.email, verifyUrl, expiresAtIso: expiresAt.toISOString() });
+
+          await auditAppend({
+            actor: { userId: user.id, role: user.role, username: user.username },
+            action: "auth.new_device_magic_link_sent",
+            details: { deviceId: normalizedDeviceId, expiresAt: expiresAt.toISOString(), sentTo: user.email },
+          });
+
+          return res.status(200).json({
+            mfaRequired: true,
+            method: "EMAIL_LINK",
+            userId: user.id,
+            username: user.username,
+            expiresAt: expiresAt.toISOString(),
+            sentTo: user.email,
+            reason: "NEW_DEVICE",
+          });
+        } else {
+
+          // No SMTP configured: fall back to OTP (console delivery)
+          const otpInfo = await issueOtpRequest({
+            user,
+            purpose: "STEP_UP",
+            context: { reason: "NEW_DEVICE", deviceId: normalizedDeviceId },
+          });
+          await auditAppend({
+            actor: { userId: user.id, role: user.role, username: user.username },
+            action: "auth.step_up_new_device_otp_issued",
+            details: { otpRequestId: otpInfo.otpRequestId, deviceId: normalizedDeviceId, delivery: otpInfo.delivery },
+          });
+          return res.status(200).json({
+            mfaRequired: true,
+            method: "EMAIL_OTP",
+            otpRequestId: otpInfo.otpRequestId,
+            userId: user.id,
+            username: user.username,
+            expiresAt: otpInfo.expiresAt,
+            sentTo: otpInfo.sentTo,
+            delivery: otpInfo.delivery,
+            reason: "NEW_DEVICE",
+          });
+        }
+      }
+
+      // Known verified device: update last seen
+      if (existing?.verifiedAt) {
+        await UserLoginDevice.updateOne(
+          { id: existing.id },
+          {
+            $set: {
+              lastSeenAt: new Date(),
+              lastIp: isNonEmptyString(ip) ? String(ip).slice(0, 128) : null,
+              lastUserAgent: isNonEmptyString(userAgent) ? String(userAgent).slice(0, 512) : null,
+            },
+          }
+        );
+      }
+    }
+
     if (user.mfaEnabled && user.mfaMethod === "EMAIL_OTP") {
       // If the user previously trusted this browser/device, allow password-only login.
       if (looksLikeDeviceId(deviceId) && isNonEmptyString(rememberToken)) {
@@ -403,6 +565,12 @@ async function start() {
             payload: { sub: user.id, role: user.role, username: user.username },
             secret: JWT_SECRET,
             expiresInSeconds: 15 * 60,
+          });
+          await recordLoginSuccess({
+            userId: user.id,
+            deviceId: String(deviceId).trim(),
+            ip: getClientIp(req),
+            userAgent: req.header("user-agent") || null,
           });
           await auditAppend({
             actor: { userId: user.id, role: user.role, username: user.username },
@@ -457,6 +625,13 @@ async function start() {
       expiresInSeconds: 15 * 60,
     });
 
+    await recordLoginSuccess({
+      userId: user.id,
+      deviceId: String(deviceId || "").trim(),
+      ip: getClientIp(req),
+      userAgent: req.header("user-agent") || null,
+    });
+
     await auditAppend({
       actor: { userId: user.id, role: user.role, username: user.username },
       action: "auth.login_success",
@@ -466,13 +641,96 @@ async function start() {
     return res.json({ token, role: user.role, userId: user.id });
   }));
 
+  // Login device history for the current user (for "account created device" + "last used device" UX)
+  app.get("/auth/login-devices", requireAuth, asyncRoute(async (req, res) => {
+    const userId = req.auth.sub;
+    const user = await User.findOne(
+      { id: userId },
+      { _id: 0, id: 1, username: 1, role: 1, createdFromDeviceId: 1, lastLoginDeviceId: 1, lastLoginAt: 1 }
+    ).lean();
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+
+    const devices = await UserLoginDevice.find({ userId }, { _id: 0, __v: 0 })
+      .sort({ lastSeenAt: -1, firstSeenAt: -1 })
+      .lean();
+
+    res.json({ user, count: devices.length, devices });
+  }));
+
+  // Consume magic link (no JWT yet) to verify new device, then issue JWT
+  app.post("/auth/magic-link/consume", asyncRoute(async (req, res) => {
+    const { token, deviceId } = req.body || {};
+    if (!isNonEmptyString(token) || !looksLikeDeviceId(deviceId)) {
+      return res.status(400).json({ error: "bad_request", message: "token + deviceId required" });
+    }
+    const record = await MagicLinkRequest.findOne({ tokenHash: hashMagicToken(String(token).trim()), purpose: "NEW_DEVICE" }).lean();
+    if (!record) return res.status(404).json({ error: "magic_link_not_found" });
+    if (record.usedAt) return res.status(409).json({ error: "magic_link_used" });
+    if (record.expiresAt.getTime() < Date.now()) return res.status(401).json({ error: "magic_link_expired" });
+    if (String(record.context?.deviceId || "") !== String(deviceId).trim()) {
+      return res.status(403).json({ error: "device_mismatch" });
+    }
+
+    const user = await User.findOne({ id: record.userId }).lean();
+    if (!user || user.status !== "active") return res.status(401).json({ error: "invalid_user" });
+
+    const now = new Date();
+    const ip = getClientIp(req);
+    const userAgent = req.header("user-agent") || null;
+    await Promise.all([
+      MagicLinkRequest.updateOne({ id: record.id }, { $set: { usedAt: now } }),
+      UserLoginDevice.updateOne(
+        { userId: user.id, deviceId: String(deviceId).trim() },
+        {
+          $setOnInsert: {
+            id: randomId("ulogdev"),
+            userId: user.id,
+            deviceId: String(deviceId).trim(),
+            firstSeenAt: now,
+            firstIp: isNonEmptyString(ip) ? String(ip).slice(0, 128) : null,
+          },
+          $set: {
+            lastSeenAt: now,
+            verifiedAt: now,
+            blockedAt: null,
+            lastIp: isNonEmptyString(ip) ? String(ip).slice(0, 128) : null,
+            lastUserAgent: isNonEmptyString(userAgent) ? String(userAgent).slice(0, 512) : null,
+          },
+        },
+        { upsert: true }
+      ),
+    ]);
+
+    await auditAppend({
+      actor: { userId: user.id, role: user.role, username: user.username },
+      action: "auth.new_device_magic_link_consumed",
+      details: { deviceId: String(deviceId).trim() },
+    });
+
+    const jwt = jwtSignHs256({
+      payload: { sub: user.id, role: user.role, username: user.username },
+      secret: JWT_SECRET,
+      expiresInSeconds: 15 * 60,
+    });
+    await recordLoginSuccess({
+      userId: user.id,
+      deviceId: String(deviceId).trim(),
+      ip: getClientIp(req),
+      userAgent: req.header("user-agent") || null,
+    });
+    return res.json({ token: jwt, role: user.role, userId: user.id });
+  }));
+
   app.post("/auth/verify-otp", asyncRoute(async (req, res) => {
     const { otpRequestId, otp, rememberDevice, deviceId } = req.body || {};
     if (!isNonEmptyString(otpRequestId) || !isNonEmptyString(otp)) {
       return res.status(400).json({ error: "bad_request", message: "otpRequestId + otp required" });
     }
 
-    const verified = await verifyOtpRequest({ otpRequestId, otp, expectedPurpose: "LOGIN" });
+    // Accept both LOGIN and STEP_UP here; device-based step-up uses STEP_UP with context.
+    const loginVerified = await verifyOtpRequest({ otpRequestId, otp, expectedPurpose: "LOGIN" });
+    const stepUpVerified = !loginVerified.ok ? await verifyOtpRequest({ otpRequestId, otp, expectedPurpose: "STEP_UP" }) : null;
+    const verified = loginVerified.ok ? loginVerified : stepUpVerified;
     if (!verified.ok) return res.status(verified.status).json(verified.body);
 
     const user = await User.findOne({ id: verified.request.userId }).lean();
@@ -512,10 +770,52 @@ async function start() {
       });
     }
 
+    // If this OTP was a step-up for a new login device, mark device verified
+    if (verified.request.purpose === "STEP_UP" && verified.request.context?.reason === "NEW_DEVICE") {
+      const normalizedDeviceId = String(verified.request.context.deviceId || "").trim();
+      if (looksLikeDeviceId(normalizedDeviceId)) {
+        const now = new Date();
+        const ip = getClientIp(req);
+        const userAgent = req.header("user-agent") || null;
+        await UserLoginDevice.updateOne(
+          { userId: user.id, deviceId: normalizedDeviceId },
+          {
+            $setOnInsert: {
+              id: randomId("ulogdev"),
+              userId: user.id,
+              deviceId: normalizedDeviceId,
+              firstSeenAt: now,
+              firstIp: isNonEmptyString(ip) ? String(ip).slice(0, 128) : null,
+            },
+            $set: {
+              lastSeenAt: now,
+              verifiedAt: now,
+              blockedAt: null,
+              lastIp: isNonEmptyString(ip) ? String(ip).slice(0, 128) : null,
+              lastUserAgent: isNonEmptyString(userAgent) ? String(userAgent).slice(0, 512) : null,
+            },
+          },
+          { upsert: true }
+        );
+        await auditAppend({
+          actor: { userId: user.id, role: user.role, username: user.username },
+          action: "auth.step_up_new_device_verified",
+          details: { deviceId: normalizedDeviceId },
+        });
+      }
+    }
+
     await auditAppend({
       actor: { userId: user.id, role: user.role, username: user.username },
       action: "auth.otp_verified",
       details: { otpRequestId, purpose: verified.request.purpose },
+    });
+
+    await recordLoginSuccess({
+      userId: user.id,
+      deviceId: String(deviceId || "").trim(),
+      ip: getClientIp(req),
+      userAgent: req.header("user-agent") || null,
     });
 
     return res.json({ token, role: user.role, userId: user.id, ...(rememberOut ? rememberOut : {}) });
@@ -690,12 +990,15 @@ async function start() {
     await RegistrationAttempt.create({ ip, patientId, ts: new Date() });
 
     const { score, top3 } = buildTrustScore({
-      newDevice: Boolean(deviceId),
+      // At registration time, the device is "new" by definition. We don't penalize for it in the MVP.
+      newDevice: false,
       ipReuseCount,
       failedOtpAttempts: 0,
       clinicCodeUsed: false,
       geoAnomaly: false,
     });
+
+    const normalizedDeviceId = looksLikeDeviceId(deviceId) ? String(deviceId).trim() : null;
 
     await User.create({
       id: patientId,
@@ -706,6 +1009,7 @@ async function start() {
       email: looksLikeEmail(email) ? String(email).trim().toLowerCase() : `${username}@demo.local`,
       mfaEnabled: false,
       mfaMethod: "NONE",
+      createdFromDeviceId: normalizedDeviceId,
     });
     await PatientProfile.create({
       patientId,
@@ -715,10 +1019,95 @@ async function start() {
       lastKnownGeo: isNonEmptyString(geo) ? geo : null,
     });
 
+    // If the patient is PENDING, auto-issue a one-time verification code (demo-friendly).
+    let verification = null;
+    if (score < 80) {
+      const code = crypto.randomBytes(4).toString("hex").toUpperCase(); // 8 chars
+      const codeHash = sha256Base64url(`clinic:${code}:${JWT_SECRET}`);
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+      await ClinicCode.create({
+        codeHash,
+        patientId,
+        expiresAt,
+        usedAt: null,
+        usedByPatientId: null,
+      });
+
+      let delivery = "console";
+      let sentTo = null;
+      const patientEmail = looksLikeEmail(email) ? String(email).trim().toLowerCase() : null;
+      if (isSmtpEnabled() && patientEmail && !patientEmail.endsWith("@demo.local")) {
+        try {
+          await sendClinicCodeEmail({ to: patientEmail, code, expiresAtIso: expiresAt.toISOString() });
+          delivery = "email";
+          sentTo = patientEmail;
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(err);
+          // fall back to console so the demo can proceed
+          // eslint-disable-next-line no-console
+          console.log(`[CLINIC_CODE] FALLBACK user=${username} patientId=${patientId} code=${code} expiresAt=${expiresAt.toISOString()}`);
+        }
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(`[CLINIC_CODE] user=${username} patientId=${patientId} code=${code} expiresAt=${expiresAt.toISOString()}`);
+      }
+
+      verification = {
+        required: true,
+        method: "CLINIC_CODE",
+        expiresAt: expiresAt.toISOString(),
+        delivery,
+        sentTo,
+      };
+
+      await auditAppend({
+        actor: { username, role: "patient" },
+        action: "patient.verification_code_issued",
+        details: { patientId, expiresAt: expiresAt.toISOString(), delivery, sentTo },
+      });
+    }
+
+    if (normalizedDeviceId) {
+      const now = new Date();
+      await UserLoginDevice.updateOne(
+        { userId: patientId, deviceId: normalizedDeviceId },
+        {
+          $setOnInsert: {
+            id: randomId("ulogdev"),
+            userId: patientId,
+            deviceId: normalizedDeviceId,
+            firstSeenAt: now,
+            firstIp: String(getClientIp(req)).slice(0, 128),
+          },
+          $set: {
+            lastSeenAt: now,
+            verifiedAt: now,
+            blockedAt: null,
+            lastIp: String(getClientIp(req)).slice(0, 128),
+            lastUserAgent: isNonEmptyString(req.header("user-agent")) ? String(req.header("user-agent")).slice(0, 512) : null,
+          },
+        },
+        { upsert: true }
+      );
+      await auditAppend({
+        actor: { username, role: "patient" },
+        action: "patient.created_device_recorded",
+        details: { patientId, deviceId: normalizedDeviceId },
+      });
+    }
+
     await auditAppend({
       actor: { username, role: "patient" },
       action: "patient.pre_register",
-      details: { patientId, ipReuseCount, trustScore: score, trustExplainTop3: top3, decidedStatus: score >= 80 ? "VERIFIED" : "PENDING" },
+      details: {
+        patientId,
+        ipReuseCount,
+        trustScore: score,
+        trustExplainTop3: top3,
+        decidedStatus: score >= 80 ? "VERIFIED" : "PENDING",
+        createdFromDeviceId: normalizedDeviceId,
+      },
     });
 
     return res.status(201).json({
@@ -727,6 +1116,7 @@ async function start() {
       trustScore: score,
       trustExplainTop3: top3,
       next: score >= 80 ? "login" : "verify_clinic_code",
+      ...(verification ? { verification } : {}),
     });
   }));
 
@@ -734,7 +1124,10 @@ async function start() {
     const profile = await PatientProfile.findOne({ patientId: req.auth.sub }, { _id: 0, __v: 0 }).lean();
     if (!profile) return res.status(404).json({ error: "patient_profile_missing" });
     const patientToken = hmacTokenizePatientId(req.auth.sub);
-    const user = await User.findOne({ id: req.auth.sub }, { _id: 0, id: 1, username: 1, email: 1, mfaEnabled: 1, mfaMethod: 1 }).lean();
+    const user = await User.findOne(
+      { id: req.auth.sub },
+      { _id: 0, id: 1, username: 1, email: 1, mfaEnabled: 1, mfaMethod: 1, createdFromDeviceId: 1, lastLoginDeviceId: 1, lastLoginAt: 1 }
+    ).lean();
     res.json({ profile, patientToken, user });
   }));
 
@@ -1405,26 +1798,31 @@ async function start() {
     const { patientId, patientToken, action, userId, username } = req.query || {};
     const filter = {};
     if (isNonEmptyString(action)) filter.action = String(action);
-    if (isNonEmptyString(username)) filter["actor.username"] = String(username);
+
+    const or = [];
     if (isNonEmptyString(userId)) {
-      filter.$or = [
-        { "actor.userId": String(userId) },
-        { "actor.patientId": String(userId) },
-      ];
+      or.push({ "actor.userId": String(userId) });
+      or.push({ "actor.patientId": String(userId) });
     }
+    if (isNonEmptyString(username)) {
+      // Some events use actor.username, others use actor.identifier (e.g., failed logins).
+      or.push({ "actor.username": String(username) });
+      or.push({ "actor.identifier": String(username) });
+    }
+
     if (isNonEmptyString(patientId)) {
       // best-effort filter by patient token inside audit details
       const token = hmacTokenizePatientId(String(patientId));
-      const base = filter.$or || [];
-      filter.$or = [
-        ...base,
+      or.push(
         { "actor.userId": String(patientId) },
         { "actor.patientId": String(patientId) },
         { "details.patientToken": token },
-      ];
+      );
     } else if (isNonEmptyString(patientToken)) {
       filter["details.patientToken"] = String(patientToken);
     }
+
+    if (or.length > 0) filter.$or = or;
 
     const entries = await AuditEntry.find(filter).sort({ ts: -1 }).limit(200).lean();
     res.json({ count: entries.length, entries });

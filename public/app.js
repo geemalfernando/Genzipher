@@ -187,6 +187,131 @@ function renderAuditReadable(targetEl, payload) {
   `;
 }
 
+function labelForStatus(status) {
+  const s = String(status || "").toUpperCase();
+  if (s === "ACTIVE" || s === "VERIFIED") return { text: s, cls: "Label--success" };
+  if (s === "PENDING") return { text: s, cls: "Label--attention" };
+  if (s === "QUARANTINED") return { text: s, cls: "Label--danger" };
+  return { text: s || "—", cls: "Label--secondary" };
+}
+
+function renderPatientProfileReadable(payload) {
+  const profile = payload?.profile || {};
+  const user = payload?.user || {};
+  const token = payload?.patientToken || "—";
+
+  const statusInfo = labelForStatus(profile.status);
+  const badge = $("patientStatusBadge");
+  badge.textContent = statusInfo.text;
+  badge.className = `Label ${statusInfo.cls}`;
+
+  const createdFromDeviceId = user.createdFromDeviceId || "—";
+  const lastLoginDeviceId = user.lastLoginDeviceId || "—";
+  const lastLoginAt = user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : "—";
+
+  const top3 = Array.isArray(profile.trustExplainTop3) ? profile.trustExplainTop3 : [];
+  const chips = top3
+    .slice(0, 3)
+    .map((x) => `<span class="Label Label--secondary mr-1 mb-1">${escapeHtml(x)}</span>`)
+    .join("");
+
+  const html = `
+    <div class="d-flex flex-wrap gap-2">
+      <span class="Label ${statusInfo.cls}">Status: ${escapeHtml(statusInfo.text)}</span>
+      <span class="Label Label--accent">DID: <span class="gz-mono">${escapeHtml(profile.did || "—")}</span></span>
+      <span class="Label Label--secondary">Trust score: ${escapeHtml(profile.trustScore ?? "—")}</span>
+      <span class="Label Label--secondary">User: <span class="gz-mono">${escapeHtml(user.username || "—")}</span></span>
+      <span class="Label Label--secondary">Email: <span class="gz-mono">${escapeHtml(user.email || "—")}</span></span>
+    </div>
+    <div class="mt-2 d-flex flex-wrap gap-2">
+      <span class="Label Label--secondary">Created device: <span class="gz-mono">${escapeHtml(createdFromDeviceId)}</span></span>
+      <span class="Label Label--secondary">Last login device: <span class="gz-mono">${escapeHtml(lastLoginDeviceId)}</span></span>
+      <span class="Label Label--secondary">Last login at: ${escapeHtml(lastLoginAt)}</span>
+    </div>
+    <div class="mt-2">
+      <div class="text-small color-fg-muted">Patient token</div>
+      <div class="gz-mono">${escapeHtml(token)}</div>
+    </div>
+    <div class="mt-2">
+      <div class="text-small color-fg-muted">Trust score explainability (top factors)</div>
+      <div class="mt-1">${chips || '<span class="color-fg-muted text-small">—</span>'}</div>
+    </div>
+    <div class="mt-2 d-flex flex-wrap gap-2">
+      <span class="Label Label--secondary">MFA: ${user.mfaEnabled ? "ON" : "OFF"} (${escapeHtml(user.mfaMethod || "NONE")})</span>
+      <span class="Label Label--secondary">Created: ${escapeHtml(profile.createdAt ? new Date(profile.createdAt).toLocaleString() : "—")}</span>
+      <span class="Label Label--secondary">Updated: ${escapeHtml(profile.updatedAt ? new Date(profile.updatedAt).toLocaleString() : "—")}</span>
+    </div>
+  `;
+
+  $("patientProfileReadable").innerHTML = html;
+}
+
+function renderLoginDevicesReadable(payload) {
+  const user = payload?.user || {};
+  const devices = Array.isArray(payload?.devices) ? payload.devices : [];
+  const createdFrom = user.createdFromDeviceId || null;
+  const lastLoginDeviceId = user.lastLoginDeviceId || null;
+
+  const summary = `
+    <div class="d-flex flex-wrap gap-2">
+      <span class="Label Label--secondary">Account created device: <span class="gz-mono">${escapeHtml(createdFrom || "—")}</span></span>
+      <span class="Label Label--secondary">Last used device: <span class="gz-mono">${escapeHtml(lastLoginDeviceId || "—")}</span></span>
+      <span class="Label Label--secondary">Last login at: ${escapeHtml(user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : "—")}</span>
+      <span class="Label Label--secondary">Devices seen: ${devices.length}</span>
+    </div>
+  `;
+
+  const rows = devices
+    .slice(0, 50)
+    .map((d) => {
+      const isCreated = createdFrom && d.deviceId === createdFrom;
+      const isLast = lastLoginDeviceId && d.deviceId === lastLoginDeviceId;
+      const flags = [
+        isLast ? `<span class="Label Label--success mr-1">LAST</span>` : "",
+        isCreated ? `<span class="Label Label--secondary mr-1">CREATED</span>` : "",
+        d.verifiedAt ? `<span class="Label Label--success mr-1">VERIFIED</span>` : `<span class="Label Label--attention mr-1">UNVERIFIED</span>`,
+        d.blockedAt ? `<span class="Label Label--danger mr-1">BLOCKED</span>` : "",
+      ]
+        .filter(Boolean)
+        .join("");
+
+      const ip = d.lastIp || d.firstIp || "—";
+      const ua = d.lastUserAgent ? String(d.lastUserAgent) : "—";
+      const uaShort = ua.length > 60 ? `${ua.slice(0, 60)}…` : ua;
+
+      return `<tr>
+        <td class="text-small">${flags || "—"}</td>
+        <td class="text-small"><span class="gz-mono">${escapeHtml(d.deviceId || "—")}</span></td>
+        <td class="text-small color-fg-muted">${escapeHtml(d.firstSeenAt ? new Date(d.firstSeenAt).toLocaleString() : "—")}</td>
+        <td class="text-small color-fg-muted">${escapeHtml(d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : "—")}</td>
+        <td class="text-small color-fg-muted"><span class="gz-mono">${escapeHtml(ip)}</span></td>
+        <td class="text-small color-fg-muted" title="${escapeHtml(ua)}">${escapeHtml(uaShort)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  $("loginDevicesReadable").innerHTML = `
+    ${summary}
+    <div class="mt-2 overflow-x-auto">
+      <table class="table-list width-full">
+        <thead>
+          <tr>
+            <th class="text-small">Flags</th>
+            <th class="text-small">Device ID</th>
+            <th class="text-small">First seen</th>
+            <th class="text-small">Last seen</th>
+            <th class="text-small">IP</th>
+            <th class="text-small">User-Agent</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows || `<tr><td colspan="6" class="text-small color-fg-muted">No devices recorded yet.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function getToken() {
   return localStorage.getItem("gz_token");
 }
@@ -350,6 +475,9 @@ async function updateAuthUi() {
         opt.textContent = `${u.username} (${u.role})`;
         sel.appendChild(opt);
       }
+
+      // Prime admin dashboard lists
+      await onLoadPendingPatients();
     }
 
     if (auth.role === "patient") {
@@ -389,6 +517,10 @@ async function onLogin(e) {
     const deviceId = getDeviceId();
     const rememberToken = getRememberTokenForIdentifier(identifier) || undefined;
     const out = await api("/auth/login", { method: "POST", body: { identifier, password, mfaCode, deviceId, rememberToken } });
+    if (out.mfaRequired && out.method === "EMAIL_LINK" && out.reason === "NEW_DEVICE") {
+      toast("New device detected. Check your email and click the verification link.", "warning");
+      return;
+    }
     if (out.mfaRequired && out.method === "EMAIL_OTP") {
       setPendingOtpState({
         otpRequestId: out.otpRequestId,
@@ -397,11 +529,12 @@ async function onLogin(e) {
         delivery: out.delivery,
         identifier,
         userId: out.userId,
+        reason: out.reason || null,
       });
       $("otpBox").hidden = false;
       $("otp_expires").textContent = out.expiresAt || "—";
       $("otp_sentTo").textContent = out.sentTo || "—";
-      toast("OTP required. Check server logs for code (MVP).", "warning");
+      toast(out.reason === "NEW_DEVICE" ? "New device detected. OTP sent." : "OTP required. Check server logs for code (MVP).", "warning");
       return;
     }
     setPendingOtpState(null);
@@ -460,6 +593,7 @@ async function onPreRegister(e) {
       username: $("pr_username").value.trim(),
       email: $("pr_email").value.trim() || undefined,
       password: $("pr_password").value,
+      deviceId: getDeviceId(),
     };
     const out = await api("/patients/pre-register", { method: "POST", body });
     $("pr_out").value = pretty(out);
@@ -467,7 +601,12 @@ async function onPreRegister(e) {
       $("vc_patientId").value = out.patientId;
       $("vc_username").value = body.username;
     }
-    toast(`Pre-registered: ${out.status} (score ${out.trustScore})`, out.status === "PENDING" ? "warning" : "success");
+    if (out.status === "PENDING" && out.verification?.required) {
+      const d = out.verification.delivery || "console";
+      toast(`Pre-registered: PENDING. Verification code sent (${d}).`, "warning");
+    } else {
+      toast(`Pre-registered: ${out.status} (score ${out.trustScore})`, out.status === "PENDING" ? "warning" : "success");
+    }
   } catch (err) {
     toast(err.message, "error");
   }
@@ -656,6 +795,7 @@ async function onIssueClinicCode(e) {
     $("cc_delivery").textContent = out.delivery || "—";
     $("cc_sentTo").textContent = out.sentTo || "—";
     toast("Clinic code generated", "success");
+    await onLoadPendingPatients();
   } catch (err) {
     toast(err.message, "error");
   }
@@ -717,8 +857,23 @@ async function refreshPatientProfile() {
     $("patient_token").textContent = out.patientToken || "—";
     $("patient_did").textContent = out.profile?.did || "—";
     $("patient_mfa_email").value = out.user?.email || "";
+    renderPatientProfileReadable(out);
+    await refreshLoginDevices();
   } catch (err) {
     $("patient_profile_out").value = pretty({ ok: false, error: err.message });
+    $("patientProfileReadable").innerHTML = `<span class="color-fg-muted text-small">${escapeHtml(err.message)}</span>`;
+  }
+}
+
+async function refreshLoginDevices() {
+  try {
+    const out = await api("/auth/login-devices");
+    window.__loginDevicesCache = out;
+    $("loginDevices_out").value = pretty(out);
+    renderLoginDevicesReadable(out);
+  } catch (err) {
+    $("loginDevices_out").value = pretty({ ok: false, error: err.message });
+    $("loginDevicesReadable").innerHTML = `<span class="color-fg-muted text-small">${escapeHtml(err.message)}</span>`;
   }
 }
 
@@ -982,6 +1137,28 @@ function wire() {
   });
 
   $("patientRefreshBtn").addEventListener("click", refreshPatientProfile);
+  $("loginDevicesRefreshBtn").addEventListener("click", refreshLoginDevices);
+  $("loginDevicesToggleJsonBtn").addEventListener("click", () => {
+    const ta = $("loginDevices_out");
+    const showing = !ta.hidden;
+    ta.hidden = showing;
+    $("loginDevicesToggleJsonBtn").textContent = showing ? "Show JSON" : "Hide JSON";
+  });
+  $("loginDevicesCopyJsonBtn").addEventListener("click", async () => {
+    const text = $("loginDevices_out").value || pretty(window.__loginDevicesCache || {});
+    await navigator.clipboard.writeText(text);
+    toast("Copied login devices JSON", "success");
+  });
+  $("patientProfileToggleJsonBtn").addEventListener("click", () => {
+    const ta = $("patient_profile_out");
+    const showing = !ta.hidden;
+    ta.hidden = showing;
+    $("patientProfileToggleJsonBtn").textContent = showing ? "Show JSON" : "Hide JSON";
+  });
+  $("patientProfileCopyJsonBtn").addEventListener("click", async () => {
+    await navigator.clipboard.writeText($("patient_profile_out").value || "");
+    toast("Copied profile JSON", "success");
+  });
   $("patientMfaForm").addEventListener("submit", onPatientEnableMfa);
   $("mfaDisableRequestBtn").addEventListener("click", onMfaDisableRequest);
   $("mfaDisableConfirmBtn").addEventListener("click", onMfaDisableConfirm);
@@ -1015,11 +1192,29 @@ async function init() {
   wire();
   setAccessTab("login");
   await checkHealth();
+
+  // Magic-link auto-consume (new device verification)
+  const url = new URL(window.location.href);
+  const magicToken = url.searchParams.get("mlt");
+  if (magicToken) {
+    try {
+      const deviceId = getDeviceId();
+      const out = await api("/auth/magic-link/consume", { method: "POST", body: { token: magicToken, deviceId } });
+      setToken(out.token);
+      toast("Device verified. Logged in.", "success");
+      url.searchParams.delete("mlt");
+      window.history.replaceState({}, "", url.toString());
+    } catch (err) {
+      toast(`Magic link failed: ${err.message}`, "error");
+    }
+  }
+
   await updateAuthUi();
 
   // Initialize toggle button labels (in case server-side render differs).
   $("auditToggleJsonBtn").textContent = $("audit_out").hidden ? "Show JSON" : "Hide JSON";
   $("adminUserAuditToggleJsonBtn").textContent = $("adminUserAuditOut").hidden ? "Show JSON" : "Hide JSON";
+  $("patientProfileToggleJsonBtn").textContent = $("patient_profile_out").hidden ? "Show JSON" : "Hide JSON";
 
   const expiryEl = $("batch_expiry");
   if (expiryEl && !expiryEl.value) {

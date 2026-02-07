@@ -347,10 +347,31 @@
             <h3 class="f5 mt-3">Patient</h3>
             <div class="Box p-2 mt-2">
               <div class="d-flex flex-justify-between flex-items-center">
-                <h4 class="f6 mb-0">Profile</h4>
-                <button id="patientRefreshBtn" class="btn btn-sm" type="button">Refresh</button>
+                <div class="d-flex flex-items-center gap-2">
+                  <h4 class="f6 mb-0">Profile</h4>
+                  <span id="patientStatusBadge" class="Label Label--secondary">—</span>
+                </div>
+                <div class="d-flex gap-2">
+                  <button id="patientRefreshBtn" class="btn btn-sm" type="button">Refresh</button>
+                  <button id="patientProfileToggleJsonBtn" class="btn btn-sm" type="button">Show JSON</button>
+                  <button id="patientProfileCopyJsonBtn" class="btn btn-sm" type="button">Copy JSON</button>
+                </div>
               </div>
-              <textarea id="patient_profile_out" class="form-control input-block gz-json mt-2" placeholder="Profile…"></textarea>
+              <div id="patientProfileReadable" class="mt-2"></div>
+              <textarea id="patient_profile_out" class="form-control input-block gz-json mt-2" hidden placeholder="Profile (JSON)…"></textarea>
+            </div>
+
+            <div class="Box p-2 mt-2">
+              <div class="d-flex flex-justify-between flex-items-center flex-wrap gap-2">
+                <h4 class="f6 mb-0">Login devices</h4>
+                <div class="d-flex gap-2">
+                  <button id="loginDevicesRefreshBtn" class="btn btn-sm" type="button">Refresh</button>
+                  <button id="loginDevicesToggleJsonBtn" class="btn btn-sm" type="button">Show JSON</button>
+                  <button id="loginDevicesCopyJsonBtn" class="btn btn-sm" type="button">Copy JSON</button>
+                </div>
+              </div>
+              <div id="loginDevicesReadable" class="mt-2"></div>
+              <textarea id="loginDevices_out" class="form-control input-block gz-json mt-2" hidden placeholder="Login devices (JSON)…"></textarea>
             </div>
 
             <div class="Box p-2 mt-2">
