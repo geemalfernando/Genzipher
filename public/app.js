@@ -61,6 +61,20 @@ function showRole(role) {
   }
 }
 
+function setAccessTab(tab) {
+  const loginPane = $("loginPane");
+  const registerPane = $("registerPane");
+  const tabLogin = $("tabLogin");
+  const tabRegister = $("tabRegister");
+
+  const isLogin = tab === "login";
+  loginPane.hidden = !isLogin;
+  registerPane.hidden = isLogin;
+
+  tabLogin.classList.toggle("btn-primary", isLogin);
+  tabRegister.classList.toggle("btn-primary", !isLogin);
+}
+
 async function updateAuthUi() {
   const token = getToken();
   $("logoutBtn").hidden = !token;
@@ -70,6 +84,7 @@ async function updateAuthUi() {
   if (!token) {
     $("whoami").textContent = "Not logged in";
     showRole("doctor");
+    setAccessTab("login");
     return;
   }
 
@@ -88,6 +103,10 @@ async function updateAuthUi() {
       opt.value = user.id;
       opt.textContent = `${user.username} (${user.id})`;
       patientSelect.appendChild(opt);
+    }
+
+    if (auth.role === "patient") {
+      await refreshPatientProfile();
     }
   } catch (err) {
     setToken(null);
@@ -129,6 +148,43 @@ async function onLogin(e) {
 function onLogout() {
   setToken(null);
   toast("Logged out", "success");
+}
+
+async function onPreRegister(e) {
+  e.preventDefault();
+  try {
+    const body = {
+      username: $("pr_username").value.trim(),
+      password: $("pr_password").value,
+      geo: $("pr_geo").value.trim() || undefined,
+      deviceId: $("pr_deviceId").value.trim() || undefined,
+    };
+    const out = await api("/patients/pre-register", { method: "POST", body });
+    $("pr_out").value = pretty(out);
+    if (out.patientId) {
+      $("vc_patientId").value = out.patientId;
+      $("vc_username").value = body.username;
+    }
+    toast(`Pre-registered: ${out.status} (score ${out.trustScore})`, out.status === "PENDING" ? "warning" : "success");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function onVerifyClinicCode(e) {
+  e.preventDefault();
+  try {
+    const body = {
+      username: $("vc_username").value.trim() || undefined,
+      patientId: $("vc_patientId").value.trim() || undefined,
+      code: $("vc_code").value.trim(),
+    };
+    const out = await api("/patients/verify-clinic-code", { method: "POST", body });
+    $("vc_out").value = pretty(out);
+    toast("Patient verified", "success");
+  } catch (err) {
+    toast(err.message, "error");
+  }
 }
 
 async function onCreateRx(e) {
@@ -248,9 +304,101 @@ async function onLoadAudit() {
   }
 }
 
+async function onIssueClinicCode(e) {
+  e.preventDefault();
+  try {
+    const patientId = $("cc_patientId").value.trim();
+    const expiresMinutes = Number($("cc_expires").value);
+    const out = await api("/clinic/codes", {
+      method: "POST",
+      body: {
+        patientId: patientId || undefined,
+        expiresMinutes: Number.isFinite(expiresMinutes) ? expiresMinutes : 10,
+      },
+    });
+    $("cc_code").textContent = out.code || "—";
+    $("cc_expiry").textContent = out.expiresAt || "—";
+    toast("Clinic code generated", "success");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function refreshPatientProfile() {
+  try {
+    const out = await api("/patients/me/profile");
+    $("patient_profile_out").value = pretty(out);
+    $("patient_token").textContent = out.patientToken || "—";
+    $("patient_did").textContent = out.profile?.did || "—";
+  } catch (err) {
+    $("patient_profile_out").value = pretty({ ok: false, error: err.message });
+  }
+}
+
+async function onPatientIssueDid() {
+  try {
+    const out = await api("/patients/issue-did", { method: "POST", body: {} });
+    $("patient_did").textContent = out.did || "—";
+    toast("DID issued", "success");
+    await refreshPatientProfile();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function onPatientProvisionKey() {
+  try {
+    const out = await api("/patients/provision-data-key", { method: "POST", body: {} });
+    $("patient_token").textContent = out.patientToken || $("patient_token").textContent;
+    toast("Data key provisioned", "success");
+    await refreshPatientProfile();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function onBindDevice(e) {
+  e.preventDefault();
+  try {
+    const body = {
+      deviceId: $("bd_deviceId").value.trim(),
+      publicKeyPem: $("bd_publicKeyPem").value,
+      fingerprintHash: $("bd_fingerprint").value.trim() || undefined,
+    };
+    const out = await api("/patients/bind-device", { method: "POST", body });
+    $("bd_out").value = pretty(out);
+    $("bd_challenge").value = pretty({ deviceId: out.challenge?.deviceId, nonce: out.challenge?.nonce });
+    toast("Challenge created. Sign it and verify.", "warning");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function onVerifyDevice(e) {
+  e.preventDefault();
+  try {
+    const challengeParsed = safeParseJson($("bd_challenge").value);
+    if (!challengeParsed.ok) return toast(`Bad challenge JSON: ${challengeParsed.error}`, "error");
+    const { deviceId } = challengeParsed.value || {};
+    const signatureB64url = $("bd_signature").value.trim();
+    const out = await api("/auth/device-verify", { method: "POST", body: { deviceId, signatureB64url } });
+    $("bd_out").value = pretty(out);
+    toast("Device verified (ACTIVE)", "success");
+    await refreshPatientProfile();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
 function wire() {
+  $("tabLogin").addEventListener("click", () => setAccessTab("login"));
+  $("tabRegister").addEventListener("click", () => setAccessTab("register"));
+
   $("loginForm").addEventListener("submit", onLogin);
   $("logoutBtn").addEventListener("click", onLogout);
+
+  $("preRegisterForm").addEventListener("submit", onPreRegister);
+  $("verifyClinicForm").addEventListener("submit", onVerifyClinicCode);
 
   $("rxForm").addEventListener("submit", onCreateRx);
   $("rxVerifyBtn").addEventListener("click", onVerifyRx);
@@ -262,6 +410,18 @@ function wire() {
 
   $("dispenseForm").addEventListener("submit", onDispense);
   $("auditLoadBtn").addEventListener("click", onLoadAudit);
+  $("clinicCodeForm").addEventListener("submit", onIssueClinicCode);
+  $("cc_copy").addEventListener("click", async () => {
+    const code = $("cc_code").textContent || "";
+    await navigator.clipboard.writeText(code);
+    toast("Copied clinic code", "success");
+  });
+
+  $("patientRefreshBtn").addEventListener("click", refreshPatientProfile);
+  $("patientIssueDidBtn").addEventListener("click", onPatientIssueDid);
+  $("patientProvisionKeyBtn").addEventListener("click", onPatientProvisionKey);
+  $("bindDeviceForm").addEventListener("submit", onBindDevice);
+  $("verifyDeviceForm").addEventListener("submit", onVerifyDevice);
 
   $("copyRxBtn").addEventListener("click", async () => {
     await navigator.clipboard.writeText($("rx_out").value || "");
@@ -283,6 +443,7 @@ function wire() {
 
 async function init() {
   wire();
+  setAccessTab("login");
   await checkHealth();
   await updateAuthUi();
 

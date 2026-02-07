@@ -6,12 +6,15 @@ import { User } from "../src/db/models/User.js";
 import { Assignment } from "../src/db/models/Assignment.js";
 import { Device } from "../src/db/models/Device.js";
 import { PatientKey } from "../src/db/models/PatientKey.js";
+import { PatientProfile } from "../src/db/models/PatientProfile.js";
 import { Prescription } from "../src/db/models/Prescription.js";
 import { Batch } from "../src/db/models/Batch.js";
 import { Dispense } from "../src/db/models/Dispense.js";
 import { Vitals } from "../src/db/models/Vitals.js";
 import { AuditMeta } from "../src/db/models/AuditMeta.js";
 import { AuditEntry } from "../src/db/models/AuditEntry.js";
+import { ClinicCode } from "../src/db/models/ClinicCode.js";
+import { RegistrationAttempt } from "../src/db/models/RegistrationAttempt.js";
 
 import { generateEd25519KeyPairPem } from "../src/lib/crypto.js";
 
@@ -38,12 +41,15 @@ async function main() {
     Assignment.deleteMany({}),
     Device.deleteMany({}),
     PatientKey.deleteMany({}),
+    PatientProfile.deleteMany({}),
     Prescription.deleteMany({}),
     Batch.deleteMany({}),
     Dispense.deleteMany({}),
     Vitals.deleteMany({}),
     AuditMeta.deleteMany({}),
     AuditEntry.deleteMany({}),
+    ClinicCode.deleteMany({}),
+    RegistrationAttempt.deleteMany({}),
   ]);
 
   const users = [
@@ -59,6 +65,13 @@ async function main() {
   const patientToken = hmacTokenizePatientId("u_patient1");
   await Assignment.create({ doctorId: "u_doctor1", patientTokens: [patientToken] });
   await PatientKey.create({ patientToken, keyB64: crypto.randomBytes(32).toString("base64") });
+  await PatientProfile.create({
+    patientId: "u_patient1",
+    status: "ACTIVE",
+    trustScore: 95,
+    trustExplainTop3: ["clinic_code_used:+35", "ip_reuse_count:0", "new_device:0"],
+    lastKnownGeo: "DEMO",
+  });
   await AuditMeta.create({ key: "audit_meta", headHash: "GENESIS" });
 
   console.log("MongoDB seed complete.");

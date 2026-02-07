@@ -37,12 +37,19 @@ All passwords are `password123`.
 ## MVP endpoints
 
 - `POST /auth/login`
+- `POST /patients/pre-register`
+- `POST /patients/verify-clinic-code`
+- `POST /clinic/codes` (admin issues 1-time clinic code)
+- `POST /patients/issue-did` (patient)
+- `POST /patients/provision-data-key` (patient)
 - `POST /prescriptions` (doctor)
 - `POST /prescriptions/verify`
 - `POST /batches` (manufacturer)
 - `POST /batches/verify`
 - `POST /dispense` (pharmacy)
-- `POST /devices/register` (patient)
+- `POST /patients/bind-device` (patient)
+- `POST /auth/device-challenge` (patient)
+- `POST /auth/device-verify` (patient)
 - `POST /vitals/upload` (patient/device)
 - `GET /audit/logs` (admin)
 

@@ -12,6 +12,9 @@ import { User } from "./db/models/User.js";
 import { Assignment } from "./db/models/Assignment.js";
 import { Device } from "./db/models/Device.js";
 import { PatientKey } from "./db/models/PatientKey.js";
+import { PatientProfile } from "./db/models/PatientProfile.js";
+import { ClinicCode } from "./db/models/ClinicCode.js";
+import { RegistrationAttempt } from "./db/models/RegistrationAttempt.js";
 import { Prescription } from "./db/models/Prescription.js";
 import { Batch } from "./db/models/Batch.js";
 import { Dispense } from "./db/models/Dispense.js";
@@ -24,6 +27,7 @@ import {
   aes256gcmEncrypt,
   nowIso,
   randomId,
+  sha256Base64url,
   signObjectEd25519,
   verifyObjectEd25519,
 } from "./lib/crypto.js";
@@ -49,6 +53,54 @@ function isNonEmptyString(value) {
 function safeNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function getClientIp(req) {
+  const xf = req.header("x-forwarded-for");
+  if (xf) return xf.split(",")[0].trim();
+  return req.ip || req.connection?.remoteAddress || "unknown";
+}
+
+function buildTrustScore({
+  newDevice,
+  ipReuseCount,
+  failedOtpAttempts,
+  clinicCodeUsed,
+  geoAnomaly,
+}) {
+  const impacts = [];
+  let score = 60;
+
+  if (clinicCodeUsed) {
+    score += 35;
+    impacts.push({ factor: "clinic_code_used", impact: +35 });
+  }
+  if (newDevice) {
+    score -= 20;
+    impacts.push({ factor: "new_device", impact: -20 });
+  }
+  if (typeof ipReuseCount === "number" && ipReuseCount > 0) {
+    const penalty = Math.min(20, ipReuseCount * 3);
+    score -= penalty;
+    impacts.push({ factor: "ip_reuse_count", impact: -penalty });
+  }
+  if (typeof failedOtpAttempts === "number" && failedOtpAttempts > 0) {
+    const penalty = Math.min(25, failedOtpAttempts * 5);
+    score -= penalty;
+    impacts.push({ factor: "failed_otp_attempts", impact: -penalty });
+  }
+  if (geoAnomaly) {
+    score -= 20;
+    impacts.push({ factor: "geo_anomaly", impact: -20 });
+  }
+
+  score = Math.max(0, Math.min(100, score));
+  const top3 = impacts
+    .sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact))
+    .slice(0, 3)
+    .map((x) => `${x.factor}:${x.impact}`);
+
+  return { score, top3 };
 }
 
 function getBearer(req) {
@@ -103,6 +155,9 @@ async function ensureIndexes() {
     Assignment.init(),
     Device.init(),
     PatientKey.init(),
+    PatientProfile.init(),
+    ClinicCode.init(),
+    RegistrationAttempt.init(),
     Prescription.init(),
     Batch.init(),
     Dispense.init(),
@@ -183,6 +238,18 @@ async function start() {
       return res.status(401).json({ error: "invalid_credentials" });
     }
 
+    if (user.role === "patient") {
+      const profile = await PatientProfile.findOne({ patientId: user.id }).lean();
+      if (!profile || (profile.status !== "ACTIVE" && profile.status !== "VERIFIED")) {
+        await auditAppend({
+          actor: { userId: user.id, role: user.role, username: user.username },
+          action: "auth.login_blocked",
+          details: { reason: "patient_not_verified", status: profile?.status || "missing_profile" },
+        });
+        return res.status(403).json({ error: "patient_not_verified", status: profile?.status || "missing_profile" });
+      }
+    }
+
     if (MFA_REQUIRED_ROLES.has(user.role) && mfaCode !== DEMO_MFA_CODE) {
       return res.status(401).json({ error: "mfa_required_or_invalid" });
     }
@@ -202,9 +269,168 @@ async function start() {
     return res.json({ token, role: user.role, userId: user.id });
   });
 
+  // --- Patient registration + strong verification (clinic code) ---
+  app.post("/patients/pre-register", async (req, res) => {
+    const { username, password, geo, deviceId } = req.body || {};
+    if (!isNonEmptyString(username) || !isNonEmptyString(password)) {
+      return res.status(400).json({ error: "bad_request", message: "username/password required" });
+    }
+
+    const ip = getClientIp(req);
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const ipReuseCount = await RegistrationAttempt.countDocuments({ ip, ts: { $gte: since } });
+
+    const existing = await User.findOne({ username }).lean();
+    if (existing) return res.status(409).json({ error: "username_taken" });
+
+    const patientId = randomId("u_patient");
+    await RegistrationAttempt.create({ ip, patientId, ts: new Date() });
+
+    const { score, top3 } = buildTrustScore({
+      newDevice: Boolean(deviceId),
+      ipReuseCount,
+      failedOtpAttempts: 0,
+      clinicCodeUsed: false,
+      geoAnomaly: false,
+    });
+
+    await User.create({
+      id: patientId,
+      username,
+      role: "patient",
+      password,
+      status: "active",
+    });
+    await PatientProfile.create({
+      patientId,
+      status: score >= 80 ? "VERIFIED" : "PENDING",
+      trustScore: score,
+      trustExplainTop3: top3,
+      lastKnownGeo: isNonEmptyString(geo) ? geo : null,
+    });
+
+    await auditAppend({
+      actor: { username, role: "patient" },
+      action: "patient.pre_register",
+      details: { patientId, ipReuseCount, trustScore: score, trustExplainTop3: top3, decidedStatus: score >= 80 ? "VERIFIED" : "PENDING" },
+    });
+
+    return res.status(201).json({
+      patientId,
+      status: score >= 80 ? "VERIFIED" : "PENDING",
+      trustScore: score,
+      trustExplainTop3: top3,
+      next: score >= 80 ? "login" : "verify_clinic_code",
+    });
+  });
+
+  app.get("/patients/me/profile", requireAuth, requireRole(["patient"]), async (req, res) => {
+    const profile = await PatientProfile.findOne({ patientId: req.auth.sub }, { _id: 0, __v: 0 }).lean();
+    if (!profile) return res.status(404).json({ error: "patient_profile_missing" });
+    const patientToken = hmacTokenizePatientId(req.auth.sub);
+    res.json({ profile, patientToken });
+  });
+
+  // Admin generates 1-time clinic code (expires in 10 minutes by default)
+  app.post("/clinic/codes", requireAuth, requireRole(["admin"]), async (req, res) => {
+    const { patientId, expiresMinutes } = req.body || {};
+    const mins = safeNumber(expiresMinutes) ?? 10;
+    const code = crypto.randomBytes(4).toString("hex").toUpperCase(); // 8 chars
+    const codeHash = sha256Base64url(`clinic:${code}:${JWT_SECRET}`);
+    const expiresAt = new Date(Date.now() + mins * 60 * 1000);
+    await ClinicCode.create({
+      codeHash,
+      patientId: isNonEmptyString(patientId) ? patientId : null,
+      expiresAt,
+      usedAt: null,
+      usedByPatientId: null,
+    });
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "clinic.code_issued",
+      details: { patientId: isNonEmptyString(patientId) ? patientId : null, expiresAt: expiresAt.toISOString() },
+    });
+    return res.status(201).json({ code, expiresAt: expiresAt.toISOString(), boundPatientId: isNonEmptyString(patientId) ? patientId : null });
+  });
+
+  app.post("/patients/verify-clinic-code", async (req, res) => {
+    const { username, patientId, code } = req.body || {};
+    if (!isNonEmptyString(code) || (!isNonEmptyString(username) && !isNonEmptyString(patientId))) {
+      return res.status(400).json({ error: "bad_request", message: "code + (username or patientId) required" });
+    }
+
+    const user = isNonEmptyString(patientId)
+      ? await User.findOne({ id: patientId, role: "patient" }).lean()
+      : await User.findOne({ username, role: "patient" }).lean();
+    if (!user) return res.status(404).json({ error: "patient_not_found" });
+
+    const codeHash = sha256Base64url(`clinic:${code}:${JWT_SECRET}`);
+    const record = await ClinicCode.findOne({ codeHash }).lean();
+    if (!record) return res.status(401).json({ error: "invalid_code" });
+    if (record.usedAt) return res.status(409).json({ error: "code_already_used" });
+    if (record.expiresAt.getTime() < Date.now()) return res.status(401).json({ error: "code_expired" });
+    if (record.patientId && record.patientId !== user.id) return res.status(403).json({ error: "code_not_for_patient" });
+
+    const profile = await PatientProfile.findOne({ patientId: user.id }).lean();
+    if (!profile) return res.status(500).json({ error: "patient_profile_missing" });
+
+    const { score, top3 } = buildTrustScore({
+      newDevice: false,
+      ipReuseCount: 0,
+      failedOtpAttempts: 0,
+      clinicCodeUsed: true,
+      geoAnomaly: false,
+    });
+
+    await Promise.all([
+      ClinicCode.updateOne({ codeHash }, { $set: { usedAt: new Date(), usedByPatientId: user.id } }),
+      PatientProfile.updateOne(
+        { patientId: user.id },
+        { $set: { status: "VERIFIED", trustScore: Math.max(profile.trustScore, score), trustExplainTop3: top3 } }
+      ),
+    ]);
+
+    await auditAppend({
+      actor: { patientId: user.id, username: user.username, role: "patient" },
+      action: "patient.verified",
+      details: { method: "clinic_code", trustScore: Math.max(profile.trustScore, score), trustExplainTop3: top3 },
+    });
+
+    return res.json({ ok: true, patientId: user.id, status: "VERIFIED", trustScore: Math.max(profile.trustScore, score), trustExplainTop3: top3, next: "login" });
+  });
+
+  // After verification, patient can provision DID + data key
+  app.post("/patients/issue-did", requireAuth, requireRole(["patient"]), async (req, res) => {
+    const profile = await PatientProfile.findOne({ patientId: req.auth.sub }).lean();
+    if (!profile) return res.status(500).json({ error: "patient_profile_missing" });
+    if (profile.did) return res.json({ did: profile.did });
+    const did = `did:genzipher:${randomId("p")}`;
+    await PatientProfile.updateOne({ patientId: req.auth.sub }, { $set: { did } });
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "patient.did_issued",
+      details: { did },
+    });
+    return res.status(201).json({ did });
+  });
+
+  app.post("/patients/provision-data-key", requireAuth, requireRole(["patient"]), async (req, res) => {
+    const patientToken = hmacTokenizePatientId(req.auth.sub);
+    const existing = await PatientKey.findOne({ patientToken }).lean();
+    if (existing) return res.json({ ok: true, patientToken });
+    const keyB64 = crypto.randomBytes(32).toString("base64");
+    await PatientKey.create({ patientToken, keyB64 });
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "patient.data_key_provisioned",
+      details: { patientToken },
+    });
+    return res.status(201).json({ ok: true, patientToken });
+  });
+
   // --- Devices (device binding) ---
-  app.post("/devices/register", requireAuth, requireRole(["patient"]), async (req, res) => {
-    const { deviceId, publicKeyPem } = req.body || {};
+  const bindDeviceHandler = async (req, res) => {
+    const { deviceId, publicKeyPem, fingerprintHash } = req.body || {};
     if (!isNonEmptyString(deviceId) || !isNonEmptyString(publicKeyPem)) {
       return res.status(400).json({ error: "bad_request", message: "deviceId/publicKeyPem required" });
     }
@@ -213,13 +439,86 @@ async function start() {
     const exists = await Device.findOne({ deviceId }).lean();
     if (exists) return res.status(409).json({ error: "device_exists" });
 
-    await Device.create({ deviceId, patientToken, publicKeyPem, status: "active" });
+    const nonce = randomId("chal");
+    await Device.create({
+      deviceId,
+      patientToken,
+      publicKeyPem,
+      fingerprintHash: isNonEmptyString(fingerprintHash) ? fingerprintHash : null,
+      status: "pending",
+      challengeNonce: nonce,
+      challengeIssuedAt: new Date(),
+      firstSeenAt: new Date(),
+      lastSeenAt: new Date(),
+      riskLevel: "low",
+    });
     await auditAppend({
       actor: { userId: req.auth.sub, role: req.auth.role },
-      action: "device.register",
+      action: "patient.device_bind_requested",
       details: { deviceId, patientToken },
     });
-    return res.status(201).json({ ok: true, deviceId, patientToken });
+    return res.status(201).json({
+      ok: true,
+      deviceId,
+      patientToken,
+      challenge: { deviceId, nonce },
+      next: "auth/device-verify",
+    });
+  };
+
+  app.post("/patients/bind-device", requireAuth, requireRole(["patient"]), bindDeviceHandler);
+  app.post("/devices/register", requireAuth, requireRole(["patient"]), bindDeviceHandler);
+
+  app.post("/auth/device-challenge", requireAuth, requireRole(["patient"]), async (req, res) => {
+    const { deviceId } = req.body || {};
+    if (!isNonEmptyString(deviceId)) return res.status(400).json({ error: "bad_request", message: "deviceId required" });
+    const patientToken = hmacTokenizePatientId(req.auth.sub);
+    const device = await Device.findOne({ deviceId, patientToken }).lean();
+    if (!device) return res.status(404).json({ error: "device_not_found" });
+    if (device.status === "active") return res.json({ ok: true, deviceId, status: "active" });
+    const nonce = randomId("chal");
+    await Device.updateOne({ deviceId }, { $set: { challengeNonce: nonce, challengeIssuedAt: new Date() } });
+    return res.json({ ok: true, challenge: { deviceId, nonce } });
+  });
+
+  app.post("/auth/device-verify", requireAuth, requireRole(["patient"]), async (req, res) => {
+    const { deviceId, signatureB64url } = req.body || {};
+    if (!isNonEmptyString(deviceId) || !isNonEmptyString(signatureB64url)) {
+      return res.status(400).json({ error: "bad_request", message: "deviceId/signatureB64url required" });
+    }
+    const patientToken = hmacTokenizePatientId(req.auth.sub);
+    const device = await Device.findOne({ deviceId, patientToken }).lean();
+    if (!device) return res.status(404).json({ error: "device_not_found" });
+    if (device.status === "blocked") return res.status(403).json({ error: "device_blocked" });
+    if (!device.challengeNonce) return res.status(409).json({ error: "no_active_challenge" });
+
+    const challengePayload = { deviceId, nonce: device.challengeNonce };
+    const ok = verifyObjectEd25519({
+      obj: challengePayload,
+      signatureB64url,
+      publicKeyPem: device.publicKeyPem,
+    });
+    if (!ok) {
+      await auditAppend({
+        actor: { userId: req.auth.sub, role: req.auth.role },
+        action: "patient.device_bind_failed",
+        details: { deviceId, reason: "bad_signature" },
+      });
+      return res.status(401).json({ error: "invalid_device_signature" });
+    }
+
+    await Device.updateOne(
+      { deviceId },
+      { $set: { status: "active", lastSeenAt: new Date() }, $unset: { challengeNonce: 1, challengeIssuedAt: 1 } }
+    );
+    await PatientProfile.updateOne({ patientId: req.auth.sub }, { $set: { status: "ACTIVE" } });
+
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role },
+      action: "patient.device_bound",
+      details: { deviceId },
+    });
+    return res.json({ ok: true, deviceId, status: "active", patientStatus: "ACTIVE" });
   });
 
   // --- Vitals upload ---
@@ -490,7 +789,22 @@ async function start() {
 
   // --- Audit viewer ---
   app.get("/audit/logs", requireAuth, requireRole(["admin"]), async (req, res) => {
-    const entries = await AuditEntry.find({}).sort({ ts: -1 }).limit(200).lean();
+    const { patientId, patientToken, action } = req.query || {};
+    const filter = {};
+    if (isNonEmptyString(action)) filter.action = String(action);
+    if (isNonEmptyString(patientId)) {
+      // best-effort filter by patient token inside audit details
+      const token = hmacTokenizePatientId(String(patientId));
+      filter.$or = [
+        { "actor.userId": String(patientId) },
+        { "actor.patientId": String(patientId) },
+        { "details.patientToken": token },
+      ];
+    } else if (isNonEmptyString(patientToken)) {
+      filter["details.patientToken"] = String(patientToken);
+    }
+
+    const entries = await AuditEntry.find(filter).sort({ ts: -1 }).limit(200).lean();
     res.json({ count: entries.length, entries });
   });
 

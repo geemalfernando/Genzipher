@@ -36,28 +36,92 @@
 
       <div class="gz-grid">
         <section class="Box p-3" id="loginBox">
-          <h2 class="f4">Login</h2>
-          <p class="color-fg-muted text-small">
+          <div class="d-flex flex-justify-between flex-items-center">
+            <h2 class="f4 mb-0">Access</h2>
+            <div class="BtnGroup">
+              <button id="tabLogin" class="BtnGroup-item btn btn-sm btn-primary" type="button">Login</button>
+              <button id="tabRegister" class="BtnGroup-item btn btn-sm" type="button">Register patient</button>
+            </div>
+          </div>
+
+          <p class="color-fg-muted text-small mt-2">
             Demo MFA code for doctor/pharmacy/manufacturer/admin: <span class="gz-mono">123456</span>
           </p>
-          <form id="loginForm" class="d-flex flex-column gap-2">
-            <label class="form-group">
-              <div class="text-small color-fg-muted">Username</div>
-              <input id="login_username" class="form-control input-block" value="doctor1" />
-            </label>
-            <label class="form-group">
-              <div class="text-small color-fg-muted">Password</div>
-              <input id="login_password" class="form-control input-block" type="password" value="password123" />
-            </label>
-            <label class="form-group">
-              <div class="text-small color-fg-muted">MFA (optional)</div>
-              <input id="login_mfa" class="form-control input-block" placeholder="123456" />
-            </label>
-            <button class="btn btn-primary" type="submit">Login</button>
-            <div class="color-fg-muted text-small">
-              Try: <span class="gz-mono">doctor1</span>, <span class="gz-mono">mfg1</span>, <span class="gz-mono">pharmacy1</span>, <span class="gz-mono">admin1</span>, <span class="gz-mono">patient1</span>
-            </div>
-          </form>
+
+          <div id="loginPane">
+            <form id="loginForm" class="d-flex flex-column gap-2">
+              <label class="form-group">
+                <div class="text-small color-fg-muted">Username</div>
+                <input id="login_username" class="form-control input-block" value="doctor1" />
+              </label>
+              <label class="form-group">
+                <div class="text-small color-fg-muted">Password</div>
+                <input id="login_password" class="form-control input-block" type="password" value="password123" />
+              </label>
+              <label class="form-group">
+                <div class="text-small color-fg-muted">MFA (optional)</div>
+                <input id="login_mfa" class="form-control input-block" placeholder="123456" />
+              </label>
+              <button class="btn btn-primary" type="submit">Login</button>
+              <div class="color-fg-muted text-small">
+                Try: <span class="gz-mono">doctor1</span>, <span class="gz-mono">mfg1</span>, <span class="gz-mono">pharmacy1</span>, <span class="gz-mono">admin1</span>, <span class="gz-mono">patient1</span>
+              </div>
+            </form>
+          </div>
+
+          <div id="registerPane" hidden>
+            <h3 class="f5 mt-2">Patient pre-registration</h3>
+            <p class="color-fg-muted text-small">
+              Creates a patient in <span class="gz-mono">PENDING</span> unless Trust Score ≥ 80. Use the clinic code flow to verify.
+            </p>
+
+            <form id="preRegisterForm" class="d-flex flex-column gap-2">
+              <label class="form-group">
+                <div class="text-small color-fg-muted">New username</div>
+                <input id="pr_username" class="form-control input-block" placeholder="newpatient1" />
+              </label>
+              <label class="form-group">
+                <div class="text-small color-fg-muted">New password</div>
+                <input id="pr_password" class="form-control input-block" type="password" placeholder="Choose a password" />
+              </label>
+              <div class="d-flex gap-2">
+                <label class="form-group flex-1">
+                  <div class="text-small color-fg-muted">Geo (optional)</div>
+                  <input id="pr_geo" class="form-control input-block" placeholder="Clinic-A" />
+                </label>
+                <label class="form-group flex-1">
+                  <div class="text-small color-fg-muted">Device ID (optional)</div>
+                  <input id="pr_deviceId" class="form-control input-block" placeholder="wearable-01" />
+                </label>
+              </div>
+              <button class="btn btn-primary" type="submit">Pre-register</button>
+            </form>
+
+            <h4 class="f6 mt-3 mb-1">Result</h4>
+            <textarea id="pr_out" class="form-control input-block gz-json" placeholder="Pre-register output…"></textarea>
+
+            <h3 class="f5 mt-3">Verify with clinic code</h3>
+            <form id="verifyClinicForm" class="d-flex flex-column gap-2">
+              <div class="d-flex gap-2">
+                <label class="form-group flex-1">
+                  <div class="text-small color-fg-muted">Patient username (or leave blank and use Patient ID)</div>
+                  <input id="vc_username" class="form-control input-block" placeholder="newpatient1" />
+                </label>
+                <label class="form-group flex-1">
+                  <div class="text-small color-fg-muted">Patient ID (optional)</div>
+                  <input id="vc_patientId" class="form-control input-block" placeholder="u_patient_..." />
+                </label>
+              </div>
+              <label class="form-group">
+                <div class="text-small color-fg-muted">Clinic code (one-time)</div>
+                <input id="vc_code" class="form-control input-block" placeholder="8-char code" />
+              </label>
+              <button class="btn" type="submit">Verify clinic code</button>
+            </form>
+
+            <h4 class="f6 mt-3 mb-1">Verification result</h4>
+            <textarea id="vc_out" class="form-control input-block gz-json" placeholder="Verify output…"></textarea>
+          </div>
         </section>
 
         <section class="Box p-3" id="appBox" hidden>
@@ -160,15 +224,95 @@
 
           <div id="role_admin" hidden>
             <h3 class="f5 mt-3">Admin/Compliance: Audit Log</h3>
+            <div class="Box p-2 mt-2">
+              <h4 class="f6 mb-2">Issue clinic verification code</h4>
+              <form id="clinicCodeForm" class="d-flex flex-column gap-2">
+                <div class="d-flex gap-2">
+                  <label class="form-group flex-1">
+                    <div class="text-small color-fg-muted">Bind to patientId (optional)</div>
+                    <input id="cc_patientId" class="form-control input-block" placeholder="u_patient_..." />
+                  </label>
+                  <label class="form-group flex-1">
+                    <div class="text-small color-fg-muted">Expires (minutes)</div>
+                    <input id="cc_expires" class="form-control input-block" type="number" value="10" />
+                  </label>
+                </div>
+                <button class="btn btn-sm" type="submit">Generate code</button>
+              </form>
+              <div class="mt-2">
+                <div class="text-small color-fg-muted">Generated code</div>
+                <div class="d-flex gap-2 flex-items-center">
+                  <code id="cc_code" class="gz-mono">—</code>
+                  <button id="cc_copy" class="btn btn-sm" type="button">Copy</button>
+                </div>
+                <div class="text-small color-fg-muted mt-1">
+                  Expiry: <span id="cc_expiry" class="gz-mono">—</span>
+                </div>
+              </div>
+            </div>
             <button id="auditLoadBtn" class="btn btn-primary btn-sm">Load latest 200 entries</button>
             <textarea id="audit_out" class="form-control input-block gz-json mt-2" placeholder="Audit entries…"></textarea>
           </div>
 
           <div id="role_patient" hidden>
             <h3 class="f5 mt-3">Patient</h3>
-            <p class="color-fg-muted text-small">
-              This MVP focuses on identity + Rx integrity + batch provenance + audits. Vitals/device binding is available via API.
-            </p>
+            <div class="Box p-2 mt-2">
+              <div class="d-flex flex-justify-between flex-items-center">
+                <h4 class="f6 mb-0">Profile</h4>
+                <button id="patientRefreshBtn" class="btn btn-sm" type="button">Refresh</button>
+              </div>
+              <textarea id="patient_profile_out" class="form-control input-block gz-json mt-2" placeholder="Profile…"></textarea>
+            </div>
+
+            <div class="Box p-2 mt-2">
+              <h4 class="f6 mb-2">Issue DID</h4>
+              <button id="patientIssueDidBtn" class="btn btn-sm" type="button">Issue DID</button>
+              <code id="patient_did" class="gz-mono d-block mt-2">—</code>
+            </div>
+
+            <div class="Box p-2 mt-2">
+              <h4 class="f6 mb-2">Provision data key</h4>
+              <button id="patientProvisionKeyBtn" class="btn btn-sm" type="button">Provision</button>
+              <div class="text-small color-fg-muted mt-1">
+                Patient token: <span id="patient_token" class="gz-mono">—</span>
+              </div>
+            </div>
+
+            <div class="Box p-2 mt-2">
+              <h4 class="f6 mb-2">Bind device (challenge → verify)</h4>
+              <form id="bindDeviceForm" class="d-flex flex-column gap-2">
+                <label class="form-group">
+                  <div class="text-small color-fg-muted">Device ID</div>
+                  <input id="bd_deviceId" class="form-control input-block" placeholder="wearable-01" />
+                </label>
+                <label class="form-group">
+                  <div class="text-small color-fg-muted">Device public key PEM (Ed25519)</div>
+                  <textarea id="bd_publicKeyPem" class="form-control input-block gz-json" placeholder="-----BEGIN PUBLIC KEY-----..."></textarea>
+                </label>
+                <label class="form-group">
+                  <div class="text-small color-fg-muted">Fingerprint hash (optional)</div>
+                  <input id="bd_fingerprint" class="form-control input-block" placeholder="sha256:..." />
+                </label>
+                <button class="btn btn-sm" type="submit">Create challenge</button>
+              </form>
+
+              <div class="mt-2">
+                <div class="text-small color-fg-muted">Challenge payload to sign</div>
+                <textarea id="bd_challenge" class="form-control input-block gz-json" placeholder='{"deviceId":"...","nonce":"..."}'></textarea>
+              </div>
+
+              <form id="verifyDeviceForm" class="d-flex flex-column gap-2 mt-2">
+                <label class="form-group">
+                  <div class="text-small color-fg-muted">Signature (base64url) over challenge payload</div>
+                  <input id="bd_signature" class="form-control input-block" placeholder="base64url..." />
+                </label>
+                <button class="btn btn-sm btn-primary" type="submit">Verify device</button>
+              </form>
+              <textarea id="bd_out" class="form-control input-block gz-json mt-2" placeholder="Bind/verify output…"></textarea>
+              <p class="color-fg-muted text-small mt-2 mb-0">
+                Tip: sign the challenge in a device app. For demo: generate keys + signature with <span class="gz-mono">node scripts/device-sign.js</span>.
+              </p>
+            </div>
           </div>
         </section>
       </div>
