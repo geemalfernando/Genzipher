@@ -38,8 +38,6 @@ export default function PatientDashboard() {
 
   // Prescription wallet
   const [wallet, setWallet] = useState([])
-  const [walletJson, setWalletJson] = useState(null)
-  const [showWalletJson, setShowWalletJson] = useState(false)
   
   // DID & Data Key
   const [did, setDid] = useState(null)
@@ -110,11 +108,9 @@ export default function PatientDashboard() {
     try {
       const data = await api('/patients/wallet')
       setWallet(data.wallet || [])
-      setWalletJson(data)
     } catch (err) {
       console.error('Wallet load error:', err)
       setWallet([])
-      setWalletJson(null)
     }
   }
 
@@ -508,27 +504,9 @@ export default function PatientDashboard() {
               </div>
 
               <div className="healthcare-card" style={{ marginBottom: '1.25rem' }}>
-                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                  <button onClick={() => setShowWalletJson((v) => !v)} className="btn-secondary" type="button">
-                    {showWalletJson ? 'Hide JSON' : 'View JSON'}
-                  </button>
-                  <button
-                    onClick={async () => {
-                      if (!walletJson) return toast('Nothing to copy', 'warning')
-                      await navigator.clipboard.writeText(JSON.stringify(walletJson, null, 2))
-                      toast('JSON copied', 'success')
-                    }}
-                    className="btn-secondary"
-                    type="button"
-                  >
-                    Copy JSON
-                  </button>
-                </div>
-                {showWalletJson && (
-                  <pre style={{ marginTop: '1rem', whiteSpace: 'pre-wrap', fontSize: '0.85rem' }}>
-                    {JSON.stringify(walletJson, null, 2)}
-                  </pre>
-                )}
+                <p style={{ margin: 0, color: 'var(--healthcare-text-muted)' }}>
+                  Tip: use <strong>Copy QR payload</strong> and paste into the pharmacy Dispense Gate to verify.
+                </p>
               </div>
 
               {wallet.length === 0 ? (
@@ -584,11 +562,20 @@ export default function PatientDashboard() {
                             className="btn-secondary"
                             type="button"
                             onClick={async () => {
-                              await navigator.clipboard.writeText(JSON.stringify(item, null, 2))
-                              toast('Copied', 'success')
+                              const lines = [
+                                `Prescription: ${rx.id || '—'}`,
+                                item.doctor?.username ? `Doctor: ${item.doctor.username}` : null,
+                                `Medicine: ${rx.medicineId || '—'}`,
+                                `Dosage: ${rx.dosage || '—'}`,
+                                `Duration: ${rx.durationDays ? `${rx.durationDays} days` : '—'}`,
+                                `Expires: ${rx.expiry ? new Date(rx.expiry).toLocaleString() : '—'}`,
+                                `Status: ${status}`,
+                              ].filter(Boolean)
+                              await navigator.clipboard.writeText(lines.join('\n'))
+                              toast('Summary copied', 'success')
                             }}
                           >
-                            Copy details
+                            Copy summary
                           </button>
                         </div>
 
@@ -620,21 +607,51 @@ export default function PatientDashboard() {
 
               <div className="healthcare-card">
                 <h2>Profile Information</h2>
-                <div className="profile-data">
-                  <pre>{JSON.stringify({
-                    username: user?.username || '—',
-                    email: user?.email || '—',
-                    status: profile?.status || '—',
-                    trustScore: profile?.trustScore ?? null,
-                    trustExplainTop3: profile?.trustExplainTop3 || [],
-                    did: profile?.did || null,
-                    patientToken: patientToken || null,
-                    mfaEnabled: user?.mfaEnabled || false,
-                    mfaMethod: user?.mfaMethod || 'NONE',
-                    createdFromDeviceId: loginDevicesUserMeta?.createdFromDeviceId || null,
-                    lastLoginDeviceId: loginDevicesUserMeta?.lastLoginDeviceId || null,
-                    lastLoginAt: loginDevicesUserMeta?.lastLoginAt || null,
-                  }, null, 2)}</pre>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginTop: '1rem' }}>
+                  <div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--healthcare-text-muted)' }}>Username</div>
+                    <div style={{ fontWeight: 700 }}>{user?.username || '—'}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--healthcare-text-muted)' }}>Email</div>
+                    <div style={{ fontWeight: 700 }}>{user?.email || '—'}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--healthcare-text-muted)' }}>Status</div>
+                    <div>
+                      <span className="appointment-status">{profile?.status || '—'}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--healthcare-text-muted)' }}>Trust score</div>
+                    <div style={{ fontWeight: 700 }}>{profile?.trustScore ?? '—'}</div>
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--healthcare-text-muted)' }}>Top trust factors</div>
+                    <div style={{ color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+                      {(profile?.trustExplainTop3 || []).length ? (profile.trustExplainTop3 || []).join(' • ') : '—'}
+                    </div>
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--healthcare-text-muted)' }}>DID</div>
+                    <div style={{ fontFamily: 'monospace', fontSize: '0.875rem' }}>{profile?.did || '—'}</div>
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--healthcare-text-muted)' }}>Patient token</div>
+                    <div style={{ fontFamily: 'monospace', fontSize: '0.875rem' }}>{patientToken || '—'}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--healthcare-text-muted)' }}>MFA</div>
+                    <div style={{ fontWeight: 700 }}>
+                      {user?.mfaEnabled ? 'Enabled' : 'Disabled'} ({user?.mfaMethod || 'NONE'})
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--healthcare-text-muted)' }}>Last login</div>
+                    <div style={{ color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+                      {loginDevicesUserMeta?.lastLoginAt ? new Date(loginDevicesUserMeta.lastLoginAt).toLocaleString() : '—'}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
