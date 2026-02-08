@@ -14,6 +14,7 @@ export default function PharmacistDashboard() {
   const [biometricEnrolled, setBiometricEnrolled] = useState(false)
   const [biometricError, setBiometricError] = useState(null)
   const [user, setUser] = useState(null)
+  const [biometricVerifiedBannerAt, setBiometricVerifiedBannerAt] = useState(null)
 
   // Dispense gate (Tier-1 demo)
   const [dispenseRxJson, setDispenseRxJson] = useState('')
@@ -87,6 +88,12 @@ export default function PharmacistDashboard() {
     if (activeTab === 'stock' && !stockLoaded) loadStock()
     if (activeTab === 'quality' && !verificationsLoaded) loadVerifications()
   }, [activeTab, biometricVerified]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!biometricVerifiedBannerAt) return
+    const t = setTimeout(() => setBiometricVerifiedBannerAt(null), 8000)
+    return () => clearTimeout(t)
+  }, [biometricVerifiedBannerAt])
 
   const checkBiometricStatus = async () => {
     try {
@@ -444,6 +451,7 @@ export default function PharmacistDashboard() {
         toast('Biometric verified successfully! Loading dashboard…', 'success')
         setActiveTab('dashboard')
         setBiometricVerified(true)
+        setBiometricVerifiedBannerAt(Date.now())
         // Auto-refresh: re-check session status and load dashboard + stats immediately.
         // This avoids the user staying on the verification screen with stale content.
         await checkBiometricStatus()
@@ -735,6 +743,24 @@ export default function PharmacistDashboard() {
 
       <main className="patient-main">
         <div className="patient-content">
+          {biometricVerifiedBannerAt && (
+            <div className="auth-alert auth-alert-success" style={{ marginBottom: '1rem' }}>
+              <div className="alert-icon">✓</div>
+              <div className="alert-content">
+                <strong>Biometric verified</strong>
+                <p style={{ margin: 0 }}>Access granted. Your session is unlocked for pharmacy actions.</p>
+              </div>
+              <div style={{ marginLeft: 'auto' }}>
+                <button
+                  type="button"
+                  className="btn-secondary btn-sm"
+                  onClick={() => setBiometricVerifiedBannerAt(null)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
           <div className="dashboard-section">
             <div className="section-header">
               <div>
