@@ -2,6 +2,12 @@
 
 This repo is a runnable MVP for a **Healthcare Security & Trust Platform** that blocks identity hijacking, stops vitals leakage, and prevents medicine swaps (placebo sabotage).
 
+## Deployed links
+
+- Frontend (Firebase Hosting): `https://genzipher-40316.web.app`
+- Backend (Vercel API base): `https://genzipher.vercel.app/api`
+- Backend health check: `https://genzipher.vercel.app/api/health`
+
 ## Threat & critical vulnerability (identity trust collapse → fraud, sabotage)
 
 If the system cannot prove:
@@ -25,9 +31,9 @@ If the system cannot prove:
 - **RBAC** per endpoint (doctor/patient/pharmacy/manufacturer/admin).
 - **Patient onboarding**: pre-register → `PENDING` → verify code → `VERIFIED/ACTIVE`.
 - **MFA**
-  - Privileged roles: demo MFA code (`DEMO_MFA_CODE`) required.
-  - Patients: **Email OTP MFA** (OTP hashed, expires, attempt limit, resend cooldown).
-  - “Trust this device”: after a successful OTP, device can skip OTP for 30 days (password still required; revocable).
+  - Per-user **Authenticator MFA (TOTP)** supported (unique per user, changes every ~30 seconds).
+  - Optional legacy demo enforcement: set `DEMO_MFA_ENFORCE=true` to require `DEMO_MFA_CODE` for privileged roles that haven’t enabled per-user MFA yet.
+  - Email OTP is still used for password reset / certain step-up flows when SMTP is configured.
 
 ## Device binding
 
@@ -66,10 +72,13 @@ Prereqs: Node.js 18+ and MongoDB.
    - `cp .env.example .env`
 3. Seed MongoDB (creates collections + demo documents):
    - `npm run seed`
-4. Run the API + UI:
+4. Run the API:
    - `npm run dev`
+5. Run the React UI:
+   - `cd chanith-frontend && npm install && npm run dev`
 
 API runs on `http://localhost:3000`.
+UI runs on `http://localhost:3001`.
 
 ## Patient verification (admin → email)
 
@@ -86,11 +95,13 @@ If email isn’t configured, uncheck “send email” and use the generated code
 
 All passwords are `password123`.
 
-- Doctor: `doctor1` (MFA code required: `123456`)
-- Patient: `patient1` (enable Email OTP MFA from the Patient screen)
-- Pharmacy: `pharmacy1` (MFA code required: `123456`)
-- Manufacturer: `mfg1` (MFA code required: `123456`)
-- Admin/Compliance: `admin1` (MFA code required: `123456`)
+- Doctor: `doctor1`
+- Patient: `patient1`
+- Pharmacy: `pharmacy1`
+- Manufacturer: `mfg1`
+- Admin/Compliance: `admin1`
+
+Note: Enable per-user Authenticator MFA (TOTP) from each role dashboard (Security/MFA). If `DEMO_MFA_ENFORCE=true`, the demo code is `DEMO_MFA_CODE` (default `123456`) for privileged roles without per-user MFA enabled.
 
 ## MVP endpoints
 
@@ -138,7 +149,9 @@ Attack simulation
 
 ## Email OTP (actual email)
 
-By default OTP prints to the server terminal logs. To send real OTP emails, set SMTP env vars in `.env` (Gmail example):
+Some flows (password reset, new-device step-up, clinic code) can send real emails when SMTP is configured.
+
+To enable email sending, set SMTP env vars in `.env` (Gmail example):
 
 - `SMTP_HOST=smtp.gmail.com`
 - `SMTP_PORT=465`
@@ -166,7 +179,8 @@ To re-enable OTP prompts on this device: Patient → Trusted device → remove t
 
 ## Disable MFA
 
-Patient can disable Email OTP MFA from the Patient screen. This requires an email OTP confirmation.
+- For **Email OTP MFA** (legacy): patient can disable it from the Patient screen (requires email OTP confirmation).
+- For **Authenticator MFA (TOTP)**: use admin break-glass reset (`POST /admin/mfa/reset`) or reset via the “Forgot password” flow with `resetMfa=true`.
 
 ## SMTP troubleshooting
 
