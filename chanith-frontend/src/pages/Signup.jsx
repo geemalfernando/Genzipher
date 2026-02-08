@@ -354,7 +354,7 @@ export default function Signup() {
                     maxLength="6"
                   />
                   <small className="auth-form-hint">
-                    This is only for account creation (admin-issued in production). After signup, MFA is per-user Email OTP.
+                    This is only for account creation (admin-issued in production). After signup, MFA is per-user Authenticator app (TOTP).
                   </small>
                 </div>
               )}

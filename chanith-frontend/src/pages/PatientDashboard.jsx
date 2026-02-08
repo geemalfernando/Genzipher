@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../utils/AuthContext'
 import { api, toast } from '../utils/api'
+import TotpSetupCard from '../components/TotpSetupCard'
 import '../styles/PatientDashboard.css'
 
 export default function PatientDashboard() {
@@ -25,7 +26,6 @@ export default function PatientDashboard() {
   })
   
   // MFA
-  const [mfaEmail, setMfaEmail] = useState('')
   const [disableOtp, setDisableOtp] = useState('')
   const [disableOtpRequestId, setDisableOtpRequestId] = useState(null)
   
@@ -76,7 +76,6 @@ export default function PatientDashboard() {
       setProfile(data.profile)
       setUser(data.user)
       setPatientToken(data.patientToken)
-      setMfaEmail(data.user?.email || '')
       setDid(data.profile?.did || null)
     } catch (err) {
       console.error('Profile load error:', err)
@@ -175,19 +174,6 @@ export default function PatientDashboard() {
       loadAppointments()
     } catch (err) {
       toast(err.message || 'Failed to book appointment', 'error')
-    }
-  }
-
-  const handleEnableMFA = async () => {
-    try {
-      await api('/patients/enable-mfa', {
-        method: 'POST',
-        body: { method: 'EMAIL_OTP', email: mfaEmail || undefined }
-      })
-      toast('MFA enabled successfully!', 'success')
-      loadProfile()
-    } catch (err) {
-      toast(err.message || 'Failed to enable MFA', 'error')
     }
   }
 
@@ -664,43 +650,36 @@ export default function PatientDashboard() {
               </div>
 
               <div className="section-grid">
-                <div className="healthcare-card">
-                  <h2>Enable MFA (Email OTP)</h2>
-                  <div className="form-group">
-                    <label>Email (optional)</label>
-                    <input
-                      type="email"
-                      value={mfaEmail}
-                      onChange={(e) => setMfaEmail(e.target.value)}
-                      placeholder="your@email.com"
-                      className="form-input"
-                    />
-                  </div>
-                  <button onClick={handleEnableMFA} className="btn-primary" disabled={user?.mfaEnabled}>
-                    {user?.mfaEnabled ? 'MFA Already Enabled' : 'Enable Email OTP MFA'}
-                  </button>
-                </div>
+                {user && (!user.mfaEnabled || user.mfaMethod === 'NONE') && (
+                  <TotpSetupCard title="MFA: Authenticator app (recommended)" onEnabled={loadProfile} />
+                )}
 
                 <div className="healthcare-card">
                   <h2>Disable MFA</h2>
-                  {!disableOtpRequestId ? (
-                    <button onClick={handleRequestDisableMFA} className="btn-danger" disabled={!user?.mfaEnabled}>
-                      Send disable code
-                    </button>
-                  ) : (
-                    <div>
-                      <div className="form-group">
-                        <label>Enter OTP Code</label>
-                        <input
-                          type="text"
-                          value={disableOtp}
-                          onChange={(e) => setDisableOtp(e.target.value)}
-                          placeholder="123456"
-                          className="form-input"
-                        />
+                  {user?.mfaEnabled && user?.mfaMethod === 'EMAIL_OTP' ? (
+                    !disableOtpRequestId ? (
+                      <button onClick={handleRequestDisableMFA} className="btn-danger">
+                        Send disable code
+                      </button>
+                    ) : (
+                      <div>
+                        <div className="form-group">
+                          <label>Enter OTP Code</label>
+                          <input
+                            type="text"
+                            value={disableOtp}
+                            onChange={(e) => setDisableOtp(e.target.value)}
+                            placeholder="123456"
+                            className="form-input"
+                          />
+                        </div>
+                        <button onClick={handleConfirmDisableMFA} className="btn-danger">Confirm Disable</button>
                       </div>
-                      <button onClick={handleConfirmDisableMFA} className="btn-danger">Confirm Disable</button>
-                    </div>
+                    )
+                  ) : (
+                    <p style={{ color: 'var(--healthcare-text-muted)', margin: 0 }}>
+                      For Authenticator MFA (TOTP), contact admin to reset if you lose access.
+                    </p>
                   )}
                 </div>
               </div>

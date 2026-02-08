@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../utils/AuthContext'
 import { api, toast } from '../utils/api'
 import AlertsList from '../components/AlertsList'
+import TotpSetupCard from '../components/TotpSetupCard'
 import '../styles/PatientDashboard.css'
 
 export default function DoctorDashboard() {
@@ -26,8 +27,6 @@ export default function DoctorDashboard() {
   const [signedPrescription, setSignedPrescription] = useState('')
   const [verificationResult, setVerificationResult] = useState('')
   const [user, setUser] = useState(null)
-  const [mfaEmail, setMfaEmail] = useState('')
-  const [mfaEnabled, setMfaEnabled] = useState(false)
   const [recentPrescriptions, setRecentPrescriptions] = useState([])
   const [alerts, setAlerts] = useState([])
 
@@ -71,20 +70,8 @@ export default function DoctorDashboard() {
     try {
       const data = await api('/me')
       setUser(data.user)
-      setMfaEnabled(Boolean(data.user?.mfaEnabled))
-      setMfaEmail(data.user?.email || '')
     } catch (err) {
       console.error('User data load error:', err)
-    }
-  }
-
-  const handleEnableMfa = async () => {
-    try {
-      await api('/mfa/enable', { method: 'POST', body: { method: 'EMAIL_OTP', email: mfaEmail || undefined } })
-      toast('MFA enabled (Email OTP). Next login will send a code to your email.', 'success')
-      await loadUserData()
-    } catch (err) {
-      toast(err.message || 'Failed to enable MFA', 'error')
     }
   }
 
@@ -464,29 +451,9 @@ export default function DoctorDashboard() {
               </div>
             </div>
 
-            {!mfaEnabled && (
-              <div className="healthcare-card" style={{ marginBottom: '2rem' }}>
-                <h2 style={{ marginTop: 0 }}>Security: Enable MFA</h2>
-                <p style={{ color: 'var(--healthcare-text-muted)', marginTop: '0.25rem' }}>
-                  Replace the shared demo MFA with your own Email OTP. After enabling, login sends a 6‑digit code to your email.
-                </p>
-                <div className="form-grid" style={{ gridTemplateColumns: '1fr auto', gap: '1rem' }}>
-                  <div className="form-group">
-                    <label className="form-group-label">Email</label>
-                    <input
-                      type="email"
-                      className="form-input"
-                      value={mfaEmail}
-                      onChange={(e) => setMfaEmail(e.target.value)}
-                      placeholder="you@example.com"
-                    />
-                  </div>
-                  <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
-                    <button type="button" className="btn-primary" onClick={handleEnableMfa}>
-                      Enable
-                    </button>
-                  </div>
-                </div>
+            {user && (!user.mfaEnabled || user.mfaMethod === 'NONE') && (
+              <div style={{ marginBottom: '2rem' }}>
+                <TotpSetupCard title="MFA: Authenticator app (recommended)" onEnabled={loadUserData} />
               </div>
             )}
 

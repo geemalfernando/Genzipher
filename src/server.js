@@ -63,6 +63,8 @@ const DEMO_MFA_CODE = process.env.DEMO_MFA_CODE || "123456";
 // Signup gate for pharmacy staff (NOT MFA). Defaults to DEMO_MFA_CODE for backward compatibility.
 const PHARMACIST_REGISTRATION_CODE = process.env.PHARMACIST_REGISTRATION_CODE || DEMO_MFA_CODE;
 const MFA_REQUIRED_ROLES = new Set(["doctor", "pharmacy", "manufacturer", "admin"]);
+// If enabled, staff roles without per-user MFA will still require DEMO_MFA_CODE at login (legacy MVP behavior).
+const DEMO_MFA_ENFORCE = String(process.env.DEMO_MFA_ENFORCE || "false").toLowerCase() === "true";
 const CORS_ORIGIN = (process.env.CORS_ORIGIN || process.env.PUBLIC_BASE_URL || "").trim();
 const DEVICE_STEP_UP_ROLES = new Set(
   (process.env.DEVICE_STEP_UP_ROLES || "patient,doctor")
@@ -181,6 +183,82 @@ function bytesFromUnknown(value) {
     if (value instanceof Uint8Array) return Buffer.from(value);
   }
   return null;
+}
+
+function base32EncodeRFC4648NoPad(buf) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  const bytes = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+  let bits = 0;
+  let value = 0;
+  let out = "";
+  for (const b of bytes) {
+    value = (value << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      out += alphabet[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) out += alphabet[(value << (5 - bits)) & 31];
+  return out;
+}
+
+function base32DecodeRFC4648(input) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  const map = new Map(alphabet.split("").map((c, i) => [c, i]));
+  const clean = String(input || "")
+    .trim()
+    .toUpperCase()
+    .replaceAll("=", "")
+    .replaceAll(" ", "");
+  if (!clean) return Buffer.alloc(0);
+  let bits = 0;
+  let value = 0;
+  const out = [];
+  for (const ch of clean) {
+    const v = map.get(ch);
+    if (v === undefined) throw new Error("invalid_base32");
+    value = (value << 5) | v;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(out);
+}
+
+function totpCodeFromSecret({ secretB32, atMs = Date.now(), stepSeconds = 30, digits = 6 }) {
+  const key = base32DecodeRFC4648(secretB32);
+  const counter = Math.floor(atMs / 1000 / stepSeconds);
+  const msg = Buffer.alloc(8);
+  msg.writeBigUInt64BE(BigInt(counter));
+  const hmac = crypto.createHmac("sha1", key).update(msg).digest();
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const bin =
+    ((hmac[offset] & 0x7f) << 24) |
+    ((hmac[offset + 1] & 0xff) << 16) |
+    ((hmac[offset + 2] & 0xff) << 8) |
+    (hmac[offset + 3] & 0xff);
+  const mod = 10 ** digits;
+  return String(bin % mod).padStart(digits, "0");
+}
+
+function verifyTotp({ secretB32, code, window = 1 }) {
+  const c = String(code || "").trim();
+  if (!/^[0-9]{6}$/.test(c)) return false;
+  const now = Date.now();
+  for (let w = -window; w <= window; w++) {
+    const t = now + w * 30 * 1000;
+    if (totpCodeFromSecret({ secretB32, atMs: t }) === c) return true;
+  }
+  return false;
+}
+
+function mfaKeyB64() {
+  // Derive a stable 32-byte key from JWT_SECRET for encrypting MFA secrets at rest (MVP).
+  const digest = crypto.createHash("sha256").update(String(JWT_SECRET)).digest("base64");
+  return digest;
 }
 
 function stableStringify(value) {
@@ -920,7 +998,38 @@ async function buildApp() {
       }
     }
 
-    if (user.mfaEnabled && user.mfaMethod === "EMAIL_OTP") {
+    if (user.mfaEnabled && user.mfaMethod === "TOTP") {
+      const code = isNonEmptyString(mfa) ? String(mfa).trim() : "";
+      if (!/^[0-9]{6}$/.test(code)) {
+        return res.status(401).json({ error: "mfa_required", message: "Enter your 6-digit authenticator code." });
+      }
+      const secretEnc = user.mfaTotpSecretEnc;
+      if (!secretEnc?.ivB64 || !secretEnc?.tagB64 || !secretEnc?.ciphertextB64) {
+        return res.status(500).json({ error: "mfa_misconfigured" });
+      }
+      let secretB32 = null;
+      try {
+        secretB32 = aes256gcmDecrypt({ ...secretEnc, keyB64: mfaKeyB64() });
+      } catch {
+        secretB32 = null;
+      }
+      if (!secretB32) return res.status(500).json({ error: "mfa_misconfigured" });
+
+      let ok = false;
+      try {
+        ok = verifyTotp({ secretB32, code, window: 1 });
+      } catch {
+        ok = false;
+      }
+      if (!ok) {
+        await auditAppend({
+          actor: { userId: user.id, role: user.role, username: user.username },
+          action: "auth.totp_failed",
+          details: {},
+        });
+        return res.status(401).json({ error: "invalid_mfa_code" });
+      }
+    } else if (user.mfaEnabled && user.mfaMethod === "EMAIL_OTP") {
       // If the user previously trusted this browser/device, allow password-only login.
       if (looksLikeDeviceId(deviceId) && isNonEmptyString(rememberToken)) {
         const trusted = await TrustedDevice.findOne({
@@ -985,7 +1094,7 @@ async function buildApp() {
       });
     }
 
-    if (MFA_REQUIRED_ROLES.has(user.role) && mfa !== DEMO_MFA_CODE) {
+    if (DEMO_MFA_ENFORCE && MFA_REQUIRED_ROLES.has(user.role) && mfa !== DEMO_MFA_CODE) {
       return res.status(401).json({
         error: "mfa_required_or_invalid",
         message: "Enter the demo MFA code for this role.",
@@ -1434,6 +1543,8 @@ async function buildApp() {
     if (doResetMfa) {
       update.mfaEnabled = false;
       update.mfaMethod = "NONE";
+      update.mfaTotpSecretEnc = null;
+      update.mfaTotpEnabledAt = null;
     }
     await User.updateOne({ id: user.id }, { $set: update });
 
@@ -2544,7 +2655,10 @@ async function buildApp() {
     const user = await User.findOne({ $or: [{ id }, { username: id }, { email: id }] }).lean();
     if (!user) return res.status(404).json({ error: "user_not_found" });
 
-    await User.updateOne({ id: user.id }, { $set: { mfaEnabled: false, mfaMethod: "NONE" } });
+    await User.updateOne(
+      { id: user.id },
+      { $set: { mfaEnabled: false, mfaMethod: "NONE", mfaTotpSecretEnc: null, mfaTotpEnabledAt: null } }
+    );
     await TrustedDevice.updateMany({ userId: user.id, revokedAt: null }, { $set: { revokedAt: new Date() } });
 
     await auditAppend({
@@ -2593,6 +2707,82 @@ async function buildApp() {
     });
 
     return res.json({ ok: true, method: "EMAIL_OTP" });
+  }));
+
+  // User: start TOTP setup (authenticator app).
+  // Returns a secret + otpauth URL and a short-lived setupToken.
+  app.post("/mfa/totp/start", requireAuth, asyncRoute(async (req, res) => {
+    const user = await User.findOne({ id: req.auth.sub }).lean();
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+    if (user.status !== "active") return res.status(403).json({ error: "account_not_active" });
+
+    const secretB32 = base32EncodeRFC4648NoPad(crypto.randomBytes(20));
+    const issuer = "GenZipher";
+    const label = `${issuer}:${user.username}`;
+    const otpauthUrl =
+      `otpauth://totp/${encodeURIComponent(label)}` +
+      `?secret=${encodeURIComponent(secretB32)}` +
+      `&issuer=${encodeURIComponent(issuer)}` +
+      `&digits=6&period=30`;
+
+    const setupToken = jwtSignHs256({
+      payload: { sub: user.id, purpose: "TOTP_SETUP", secretB32 },
+      secret: JWT_SECRET,
+      expiresInSeconds: 10 * 60,
+    });
+
+    await auditAppend({
+      actor: { userId: user.id, role: user.role, username: user.username },
+      action: "user.totp_setup_started",
+      details: {},
+    });
+
+    return res.json({ ok: true, secretB32, otpauthUrl, setupToken, expiresInSeconds: 10 * 60 });
+  }));
+
+  app.post("/mfa/totp/confirm", requireAuth, asyncRoute(async (req, res) => {
+    const { setupToken, code } = req.body || {};
+    if (!isNonEmptyString(setupToken) || !isNonEmptyString(code)) {
+      return res.status(400).json({ error: "bad_request", message: "setupToken + code required" });
+    }
+
+    const verified = jwtVerifyHs256({ token: String(setupToken).trim(), secret: JWT_SECRET });
+    if (!verified.ok) return res.status(401).json({ error: "invalid_setup_token" });
+    const payload = verified.payload || {};
+    if (payload.purpose !== "TOTP_SETUP" || payload.sub !== req.auth.sub || !isNonEmptyString(payload.secretB32)) {
+      return res.status(401).json({ error: "invalid_setup_token" });
+    }
+
+    const secretB32 = String(payload.secretB32);
+    let ok = false;
+    try {
+      ok = verifyTotp({ secretB32, code: String(code).trim(), window: 1 });
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      await auditAppend({
+        actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+        action: "user.totp_setup_failed",
+        details: {},
+      });
+      return res.status(401).json({ error: "invalid_totp_code" });
+    }
+
+    const encrypted = aes256gcmEncrypt({ plaintext: secretB32, keyB64: mfaKeyB64() });
+    await User.updateOne(
+      { id: req.auth.sub },
+      { $set: { mfaEnabled: true, mfaMethod: "TOTP", mfaTotpSecretEnc: encrypted, mfaTotpEnabledAt: new Date() } }
+    );
+    await TrustedDevice.updateMany({ userId: req.auth.sub, revokedAt: null }, { $set: { revokedAt: new Date() } });
+
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+      action: "user.totp_enabled",
+      details: {},
+    });
+
+    return res.json({ ok: true, method: "TOTP" });
   }));
 
   // Admin: check SMTP connectivity/auth without sending an email

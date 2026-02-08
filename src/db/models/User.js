@@ -20,6 +20,10 @@ const UserSchema = new mongoose.Schema(
       default: "NONE",
       index: true,
     },
+    // Encrypted TOTP secret (base32) for authenticator-app MFA.
+    // Stored as { ivB64, tagB64, ciphertextB64 }.
+    mfaTotpSecretEnc: { type: mongoose.Schema.Types.Mixed, default: null },
+    mfaTotpEnabledAt: { type: Date, default: null, index: true },
     biometricEnrolled: { type: Boolean, required: true, default: false, index: true },
     biometricEnrolledAt: { type: Date, default: null, index: true },
     createdFromDeviceId: { type: String, default: null, index: true },

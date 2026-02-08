@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../utils/AuthContext'
 import { api, toast } from '../utils/api'
 import { base64UrlToUint8Array, arrayBufferToBytes } from '../utils/webauthn'
+import TotpSetupCard from '../components/TotpSetupCard'
 import '../styles/PatientDashboard.css'
 
 export default function PharmacistDashboard() {
@@ -779,6 +780,12 @@ export default function PharmacistDashboard() {
 
             {activeTab === 'dashboard' && (
               <div>
+                {user && (!user.mfaEnabled || user.mfaMethod === 'NONE') && (
+                  <div style={{ marginBottom: '2rem' }}>
+                    <TotpSetupCard title="MFA: Authenticator app (recommended)" onEnabled={checkBiometricStatus} />
+                  </div>
+                )}
+
                 <div className="healthcare-card" style={{ marginBottom: '2rem' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
                     <h2>Pharmacist Dashboard</h2>

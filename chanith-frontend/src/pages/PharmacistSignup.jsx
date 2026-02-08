@@ -193,7 +193,7 @@ export default function PharmacistSignup() {
                 maxLength="6"
               />
               <small style={{ color: 'var(--healthcare-text-muted)', fontSize: '0.75rem', marginTop: '0.25rem', display: 'block' }}>
-                This is only for account creation (admin-issued in production). After signup, MFA is per-user Email OTP.
+                This is only for account creation (admin-issued in production). After signup, MFA is per-user Authenticator app (TOTP).
               </small>
             </div>
 

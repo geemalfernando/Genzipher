@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../utils/AuthContext'
 import { api, toast } from '../utils/api'
 import AlertsList from '../components/AlertsList'
+import TotpSetupCard from '../components/TotpSetupCard'
 import '../styles/PatientDashboard.css'
 
 export default function AdminDashboard() {
@@ -559,6 +560,12 @@ export default function AdminDashboard() {
                 </p>
               </div>
             </div>
+
+            {user && (!user.mfaEnabled || user.mfaMethod === 'NONE') && (
+              <div style={{ marginBottom: '2rem' }}>
+                <TotpSetupCard title="MFA: Authenticator app (recommended)" onEnabled={loadUserData} />
+              </div>
+            )}
 
             <div className="healthcare-card" style={{ marginBottom: '2rem' }}>
               <h2 style={{ marginBottom: '1.5rem', fontSize: '1.5rem', fontWeight: 600 }}>

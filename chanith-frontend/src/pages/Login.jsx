@@ -321,7 +321,7 @@ export default function Login() {
                     placeholder="123456"
                   />
                   <small className="auth-form-hint">
-                    If you enabled Email OTP MFA, leave this empty and you’ll get an OTP. Seeded demo staff accounts can use <strong>123456</strong>.
+                    If you enabled Email OTP MFA, leave this empty and you’ll get an OTP. If you enabled Authenticator MFA (TOTP), enter the 6‑digit code here.
                   </small>
                 </div>
 
