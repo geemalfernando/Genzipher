@@ -637,15 +637,21 @@ export default function PharmacistDashboard() {
                       Enroll Biometric
                     </button>
                   ) : (
-                    <button onClick={handleVerifyBiometric} className="btn-primary">
-                      Start Biometric Verification
-                    </button>
+                    <>
+                      <button onClick={handleVerifyBiometric} className="btn-primary">
+                        Start Biometric Verification
+                      </button>
+                      <button onClick={handleEnrollBiometric} className="btn-secondary" type="button">
+                        Enroll this device
+                      </button>
+                    </>
                   )}
                 </div>
 
                 <div style={{ marginTop: '2rem', padding: '1rem', background: 'var(--healthcare-bg)', borderRadius: '8px' }}>
                   <p style={{ fontSize: '0.875rem', color: 'var(--healthcare-text-muted)', margin: 0 }}>
-                    <strong>Note:</strong> This will use your device's fingerprint scanner or face recognition. Make sure your browser has permission to access biometrics.
+                    <strong>Note:</strong> Fingerprint/FaceID works only after you enroll on the same domain you’re using now.
+                    If you enrolled earlier on <span style={{ fontFamily: 'monospace' }}>localhost</span>, click <strong>Enroll this device</strong> on the hosted site to create a new passkey for this domain.
                   </p>
                 </div>
               </div>
