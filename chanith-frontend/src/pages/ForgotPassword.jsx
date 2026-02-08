@@ -113,7 +113,12 @@ export default function ForgotPassword() {
       })
 
       if (data.ok) {
-        toast('Password reset successfully! Redirecting to login...', 'success')
+        toast(
+          resetMfa
+            ? 'Password reset. MFA cleared. After login, set up Authenticator MFA (TOTP) again.'
+            : 'Password reset successfully! Redirecting to login...',
+          'success'
+        )
         setTimeout(() => {
           navigate('/login')
         }, 2000)
@@ -206,11 +211,11 @@ export default function ForgotPassword() {
 
       <main className="auth-main">
         <div className="auth-main-content">
-          <div className="auth-card">
-            <div className="auth-card-header">
-              <h1>Reset password (Email OTP)</h1>
+            <div className="auth-card">
+              <div className="auth-card-header">
+                <h1>Reset password (Email OTP)</h1>
               <p>Enter your username/email. We'll send a 6-digit code to your email if the account has one.</p>
-            </div>
+              </div>
 
             {step === 'request' && (
               <form onSubmit={handleSendCode} className="auth-form">
@@ -317,10 +322,10 @@ export default function ForgotPassword() {
                       checked={resetMfa}
                       onChange={(e) => setResetMfa(e.target.checked)}
                     />
-                    <span>Also reset MFA</span>
+                    <span>Also reset Authenticator MFA (TOTP)</span>
                   </label>
                   <small className="auth-form-hint">
-                    Use this if you can’t complete MFA. If you also can’t access email later, an admin must help re-enable.
+                    Use this if you lost access to your authenticator app. You’ll need to set up TOTP again after login.
                   </small>
                 </div>
 

@@ -721,7 +721,7 @@ export default function AdminDashboard() {
               <div style={{ marginBottom: '2rem', paddingBottom: '2rem', borderBottom: '1px solid var(--healthcare-border)' }}>
                 <h3 style={{ marginBottom: '1rem', fontSize: '1.125rem', fontWeight: 600 }}>MFA reset (admin only)</h3>
                 <p style={{ color: 'var(--healthcare-text-muted)', marginTop: '0.25rem' }}>
-                  Use this only when a user forgot both password and email/MFA access.
+                  Use this only when a user lost access to their Authenticator MFA (TOTP) and cannot recover.
                 </p>
                 <div className="form-grid" style={{ gridTemplateColumns: '1fr auto', gap: '1rem' }}>
                   <div className="form-group">
