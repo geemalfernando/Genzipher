@@ -1839,9 +1839,19 @@ async function buildApp() {
       .sort({ enrolledAt: -1 })
       .limit(20)
       .lean();
+    // Self-heal: if DB has biometrics but the user flag wasn't updated (or was lost), fix it.
+    const enrolledByRecords = biometrics.length > 0;
+    const enrolled = Boolean(user.biometricEnrolled) || enrolledByRecords;
+    if (enrolledByRecords && !user.biometricEnrolled) {
+      try {
+        await User.updateOne({ id: req.auth.sub }, { $set: { biometricEnrolled: true, biometricEnrolledAt: biometrics[0].enrolledAt || new Date() } });
+      } catch {
+        // ignore
+      }
+    }
     res.json({
-      enrolled: Boolean(user.biometricEnrolled),
-      enrolledAt: user.biometricEnrolledAt ? new Date(user.biometricEnrolledAt).toISOString() : null,
+      enrolled,
+      enrolledAt: enrolled ? (user.biometricEnrolledAt ? new Date(user.biometricEnrolledAt).toISOString() : (biometrics[0]?.enrolledAt ? new Date(biometrics[0].enrolledAt).toISOString() : null)) : null,
       biometrics: biometrics.map((b) => ({
         id: b.id,
         deviceName: b.deviceName || null,
@@ -1897,6 +1907,7 @@ async function buildApp() {
   }));
 
   app.post("/biometric/enroll/complete", requireAuth, requireRole(["pharmacy"]), asyncRoute(async (req, res) => {
+    const did = getRequestDeviceId(req);
     const { credential, challenge, deviceName } = req.body || {};
     if (!credential || !isNonEmptyString(challenge)) {
       return res.status(400).json({ error: "bad_request", message: "credential and challenge required" });
@@ -1932,15 +1943,22 @@ async function buildApp() {
         return res.status(200).json({ ok: true, alreadyEnrolled: true, reactivated: !isActive });
       }
 
-      // If the credential is orphaned (user deleted), clean it up and allow enrollment to proceed.
+      // If the credential is orphaned (user missing/deleted), clean it up and allow enrollment to proceed.
       const owner = await User.findOne({ id: existing.userId }).lean();
-      if (!owner) {
+      if (!owner || owner.status === "deleted") {
         await Biometric.deleteOne({ id: existing.id });
         await auditAppend({
           actor: { userId: req.auth.sub, role: "pharmacy", username: req.auth.username },
           action: "biometric.orphan_deleted",
-          details: { credentialId: credIdB64u, deletedBiometricId: existing.id },
+          details: { credentialId: credIdB64u, deletedBiometricId: existing.id, ownerUserId: existing.userId, ownerStatus: owner?.status || "missing" },
         });
+        // Best-effort: if we deleted the last biometric for the old user, clear their flag.
+        if (owner?.id) {
+          const remaining = await Biometric.countDocuments({ userId: owner.id, isActive: true });
+          if (remaining === 0) {
+            await User.updateOne({ id: owner.id }, { $set: { biometricEnrolled: false, biometricEnrolledAt: null } });
+          }
+        }
       } else {
         // eslint-disable-next-line no-console
         console.log(`[BIOMETRIC] credential_exists credentialId=${credIdB64u} ownerUserId=${existing.userId}`);
@@ -1994,6 +2012,28 @@ async function buildApp() {
       User.updateOne({ id: req.auth.sub }, { $set: { biometricEnrolled: true, biometricEnrolledAt: new Date() } }),
       WebAuthnChallenge.deleteOne({ id: latest.id }),
     ]);
+
+    // Convenience: if we have a staff session deviceId, mark the current session as verified
+    // so signup -> enroll immediately unlocks the pharmacy dashboard.
+    if (did) {
+      const now = new Date();
+      await StaffSession.updateOne(
+        { userId: req.auth.sub, role: "pharmacy", deviceId: did, isActive: true },
+        {
+          $setOnInsert: {
+            id: randomId("staffsess"),
+            userId: req.auth.sub,
+            role: "pharmacy",
+            deviceId: did,
+            firstSeenAt: now,
+            ipAddress: String(getClientIp(req)).slice(0, 128),
+            userAgent: isNonEmptyString(req.header("user-agent")) ? String(req.header("user-agent")).slice(0, 512) : null,
+          },
+          $set: { lastSeenAt: now, biometricVerified: true, biometricVerifiedAt: now, isActive: true },
+        },
+        { upsert: true }
+      );
+    }
 
     await auditAppend({
       actor: { userId: req.auth.sub, role: "pharmacy", username: req.auth.username },
@@ -2322,6 +2362,10 @@ async function buildApp() {
     if (!existing) return res.json({ ok: true, deleted: false });
 
     await Biometric.deleteOne({ id: existing.id });
+    const remaining = await Biometric.countDocuments({ userId: existing.userId, isActive: true });
+    if (remaining === 0) {
+      await User.updateOne({ id: existing.userId }, { $set: { biometricEnrolled: false, biometricEnrolledAt: null } });
+    }
     await auditAppend({
       actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
       action: "admin.biometric_deleted",
