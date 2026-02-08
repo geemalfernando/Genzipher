@@ -343,7 +343,7 @@ export default function Signup() {
 
               {(selectedRole === 'pharmacy' || selectedRole === 'doctor' || selectedRole === 'patient') && (
                 <div className="auth-form-group">
-                  <label className="auth-form-label">Registration Code (MFA) *</label>
+                  <label className="auth-form-label">Registration Code *</label>
                   <input
                     type="text"
                     className="auth-form-input"
@@ -354,7 +354,7 @@ export default function Signup() {
                     maxLength="6"
                   />
                   <small className="auth-form-hint">
-                    Demo MFA code: 123456
+                    This is only for account creation (admin-issued in production). After signup, MFA is per-user Email OTP.
                   </small>
                 </div>
               )}

@@ -60,6 +60,8 @@ import {
 const PORT = Number(process.env.PORT || 3000);
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 const DEMO_MFA_CODE = process.env.DEMO_MFA_CODE || "123456";
+// Signup gate for pharmacy staff (NOT MFA). Defaults to DEMO_MFA_CODE for backward compatibility.
+const PHARMACIST_REGISTRATION_CODE = process.env.PHARMACIST_REGISTRATION_CODE || DEMO_MFA_CODE;
 const MFA_REQUIRED_ROLES = new Set(["doctor", "pharmacy", "manufacturer", "admin"]);
 const CORS_ORIGIN = (process.env.CORS_ORIGIN || process.env.PUBLIC_BASE_URL || "").trim();
 const DEVICE_STEP_UP_ROLES = new Set(
@@ -1720,8 +1722,10 @@ async function buildApp() {
       role: "doctor",
       password: hashPasswordScrypt(password),
       status: "pending",
-      mfaEnabled: true,
-      mfaMethod: "NONE",
+      // Prefer per-user Email OTP MFA for staff accounts (unique per user),
+      // fall back to demo MFA when SMTP isn't configured.
+      mfaEnabled: isSmtpEnabled(),
+      mfaMethod: isSmtpEnabled() ? "EMAIL_OTP" : "NONE",
       publicKeyPem,
       privateKeyPem,
     });
@@ -1781,22 +1785,29 @@ async function buildApp() {
     if (!looksLikeUsername(username) || !looksLikePassword(password) || !looksLikeEmail(email)) {
       return res.status(400).json({ error: "bad_request", message: "username + email + password required" });
     }
-    if (String(mfaCode || "").trim() !== String(DEMO_MFA_CODE)) {
-      return res.status(401).json({ error: "invalid_mfa_code", message: "Invalid MFA code. Please use the correct registration code." });
+    // Signup gate: registration code (NOT MFA). Prevents random public signups in the MVP.
+    if (String(mfaCode || "").trim() !== String(PHARMACIST_REGISTRATION_CODE)) {
+      return res.status(401).json({ error: "invalid_registration_code", message: "Invalid registration code." });
     }
     const existing = await User.findOne({ $or: [{ username }, { email: String(email).trim().toLowerCase() }] }).lean();
     if (existing) return res.status(409).json({ error: "user_exists" });
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+    // If SMTP is enabled, default to per-user Email OTP MFA for pharmacy accounts.
+    // Otherwise, keep demo MFA flow (login uses DEMO_MFA_CODE for staff roles).
+    const useEmailOtpMfa =
+      isSmtpEnabled() && looksLikeEmail(normalizedEmail) && !String(normalizedEmail).endsWith("@demo.local");
 
     const userId = randomId("u_pharmacy");
     const user = await User.create({
       id: userId,
       username: String(username).trim(),
-      email: String(email).trim().toLowerCase(),
+      email: normalizedEmail,
       role: "pharmacy",
       password: hashPasswordScrypt(password),
       status: "active",
-      mfaEnabled: false,
-      mfaMethod: "NONE",
+      mfaEnabled: useEmailOtpMfa,
+      mfaMethod: useEmailOtpMfa ? "EMAIL_OTP" : "NONE",
       biometricEnrolled: false,
       biometricEnrolledAt: null,
       createdFromDeviceId: looksLikeDeviceId(deviceId) ? String(deviceId).trim() : null,

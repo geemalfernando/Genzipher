@@ -312,7 +312,7 @@ export default function Login() {
                 </div>
 
                 <div className="auth-form-group">
-                  <label className="auth-form-label">MFA Code</label>
+                  <label className="auth-form-label">MFA (optional)</label>
                   <input
                     type="text"
                     className="auth-form-input"
@@ -321,7 +321,7 @@ export default function Login() {
                     placeholder="123456"
                   />
                   <small className="auth-form-hint">
-                    Required for admin/doctor/pharmacy/manufacturer roles
+                    If you enabled Email OTP MFA, leave this empty and you’ll get an OTP. Seeded demo staff accounts can use <strong>123456</strong>.
                   </small>
                 </div>
 

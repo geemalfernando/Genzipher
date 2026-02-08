@@ -182,7 +182,7 @@ export default function PharmacistSignup() {
             </div>
 
             <div className="auth-form-group">
-              <label className="auth-form-label">Registration Code (MFA) *</label>
+              <label className="auth-form-label">Registration Code *</label>
               <input
                 type="text"
                 className="auth-form-input"
@@ -193,7 +193,7 @@ export default function PharmacistSignup() {
                 maxLength="6"
               />
               <small style={{ color: 'var(--healthcare-text-muted)', fontSize: '0.75rem', marginTop: '0.25rem', display: 'block' }}>
-                Demo MFA code: 123456
+                This is only for account creation (admin-issued in production). After signup, MFA is per-user Email OTP.
               </small>
             </div>
 
