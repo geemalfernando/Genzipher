@@ -441,9 +441,12 @@ export default function PharmacistDashboard() {
       })
 
       if (result.ok) {
+        toast('Biometric verified successfully! Loading dashboard…', 'success')
+        setActiveTab('dashboard')
         setBiometricVerified(true)
-        toast('Biometric verified successfully!', 'success')
-        loadDashboard()
+        // Auto-refresh: re-check session status and load dashboard + stats immediately.
+        // This avoids the user staying on the verification screen with stale content.
+        await checkBiometricStatus()
       }
     } catch (err) {
       console.error('Biometric verification error:', err)
