@@ -30,6 +30,49 @@ export default function PharmacistDashboard() {
     pendingVerifications: 0
   })
 
+  // Medicines
+  const [medicines, setMedicines] = useState([])
+  const [medicinesLoaded, setMedicinesLoaded] = useState(false)
+  const [medicinesLoading, setMedicinesLoading] = useState(false)
+  const [medicineSearch, setMedicineSearch] = useState('')
+  const [newMedicine, setNewMedicine] = useState({
+    name: '',
+    genericName: '',
+    manufacturer: '',
+    category: 'Antibiotic',
+    strengths: '',
+    dosageForms: 'Tablet',
+    requiresPrescription: true,
+  })
+
+  // Stock
+  const [stockItems, setStockItems] = useState([])
+  const [stockLoaded, setStockLoaded] = useState(false)
+  const [stockLoading, setStockLoading] = useState(false)
+  const [newStock, setNewStock] = useState({
+    medicineId: '',
+    quantity: 10,
+    unit: 'units',
+    expiryDate: '',
+    batchId: '',
+    location: '',
+    minStockLevel: 10,
+    notes: '',
+  })
+
+  // Quality verification
+  const [verifications, setVerifications] = useState([])
+  const [verificationsLoaded, setVerificationsLoaded] = useState(false)
+  const [verificationsLoading, setVerificationsLoading] = useState(false)
+  const [newVerification, setNewVerification] = useState({
+    medicineId: '',
+    standard: 'USP',
+    identity: 'pass',
+    potency: 'pass',
+    contamination: 'pass',
+    notes: '',
+  })
+
   useEffect(() => {
     if (!token) {
       navigate('/login')
@@ -37,6 +80,13 @@ export default function PharmacistDashboard() {
     }
     checkBiometricStatus()
   }, [token, navigate])
+
+  useEffect(() => {
+    if (!biometricVerified) return
+    if (activeTab === 'medicines' && !medicinesLoaded) loadMedicines()
+    if (activeTab === 'stock' && !stockLoaded) loadStock()
+    if (activeTab === 'quality' && !verificationsLoaded) loadVerifications()
+  }, [activeTab, biometricVerified]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const checkBiometricStatus = async () => {
     try {
@@ -71,6 +121,190 @@ export default function PharmacistDashboard() {
       setStatistics(data.statistics || statistics)
     } catch (err) {
       console.error('Dashboard load error:', err)
+      if (String(err?.message || '') === 'biometric_verification_required') {
+        setBiometricVerified(false)
+        toast('Biometric verification required again. Please verify to continue.', 'warning')
+      } else {
+        toast(err.message || 'Failed to load pharmacy dashboard', 'error')
+      }
+    }
+  }
+
+  const loadMedicines = async () => {
+    try {
+      setMedicinesLoading(true)
+      const qs = new URLSearchParams()
+      if (medicineSearch && medicineSearch.trim()) qs.set('search', medicineSearch.trim())
+      const data = await api(`/pharmacy/medicines${qs.toString() ? `?${qs.toString()}` : ''}`)
+      setMedicines(data.medicines || [])
+      setMedicinesLoaded(true)
+    } catch (err) {
+      if (String(err?.message || '') === 'biometric_verification_required') {
+        setBiometricVerified(false)
+        toast('Biometric verification required again. Please verify to continue.', 'warning')
+      } else {
+        toast(err.message || 'Failed to load medicines', 'error')
+      }
+      setMedicines([])
+    } finally {
+      setMedicinesLoading(false)
+    }
+  }
+
+  const createMedicine = async () => {
+    try {
+      setMedicinesLoading(true)
+      const strengths = String(newMedicine.strengths || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+      const dosageForms = String(newMedicine.dosageForms || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+      const out = await api('/pharmacy/medicines', {
+        method: 'POST',
+        body: {
+          name: newMedicine.name,
+          genericName: newMedicine.genericName || undefined,
+          manufacturer: newMedicine.manufacturer,
+          category: newMedicine.category,
+          strengths,
+          dosageForms,
+          requiresPrescription: Boolean(newMedicine.requiresPrescription),
+        },
+      })
+      toast('Medicine added', 'success')
+      setNewMedicine({ ...newMedicine, name: '', genericName: '', strengths: '' })
+      setMedicinesLoaded(false)
+      await loadMedicines()
+      await loadDashboard()
+      if (!newStock.medicineId) setNewStock((s) => ({ ...s, medicineId: out.id }))
+      if (!newVerification.medicineId) setNewVerification((s) => ({ ...s, medicineId: out.id }))
+    } catch (err) {
+      if (String(err?.message || '') === 'biometric_verification_required') {
+        setBiometricVerified(false)
+        toast('Biometric verification required again. Please verify to continue.', 'warning')
+      } else {
+        toast(err.message || 'Failed to add medicine', 'error')
+      }
+    } finally {
+      setMedicinesLoading(false)
+    }
+  }
+
+  const loadStock = async () => {
+    try {
+      setStockLoading(true)
+      const data = await api('/pharmacy/stock')
+      setStockItems(data.stock || [])
+      setStockLoaded(true)
+      if (!medicinesLoaded) {
+        await loadMedicines()
+      }
+    } catch (err) {
+      if (String(err?.message || '') === 'biometric_verification_required') {
+        setBiometricVerified(false)
+        toast('Biometric verification required again. Please verify to continue.', 'warning')
+      } else {
+        toast(err.message || 'Failed to load stock', 'error')
+      }
+      setStockItems([])
+    } finally {
+      setStockLoading(false)
+    }
+  }
+
+  const createStock = async () => {
+    if (!newStock.medicineId) return toast('Select a medicine', 'error')
+    if (!newStock.expiryDate) return toast('Select an expiry date', 'error')
+    try {
+      setStockLoading(true)
+      await api('/pharmacy/stock', {
+        method: 'POST',
+        body: {
+          medicineId: newStock.medicineId,
+          quantity: Number(newStock.quantity),
+          unit: newStock.unit || undefined,
+          expiryDate: newStock.expiryDate,
+          batchId: newStock.batchId || undefined,
+          location: newStock.location || undefined,
+          minStockLevel: Number(newStock.minStockLevel) || 10,
+          notes: newStock.notes || undefined,
+        },
+      })
+      toast('Stock item added', 'success')
+      setNewStock({ ...newStock, quantity: 10, expiryDate: '', batchId: '', notes: '' })
+      setStockLoaded(false)
+      await loadStock()
+      await loadDashboard()
+    } catch (err) {
+      if (String(err?.message || '') === 'biometric_verification_required') {
+        setBiometricVerified(false)
+        toast('Biometric verification required again. Please verify to continue.', 'warning')
+      } else {
+        toast(err.message || 'Failed to add stock', 'error')
+      }
+    } finally {
+      setStockLoading(false)
+    }
+  }
+
+  const loadVerifications = async () => {
+    try {
+      setVerificationsLoading(true)
+      const data = await api('/pharmacy/quality-verifications')
+      setVerifications(data.verifications || [])
+      setVerificationsLoaded(true)
+      if (!medicinesLoaded) {
+        await loadMedicines()
+      }
+    } catch (err) {
+      if (String(err?.message || '') === 'biometric_verification_required') {
+        setBiometricVerified(false)
+        toast('Biometric verification required again. Please verify to continue.', 'warning')
+      } else {
+        toast(err.message || 'Failed to load verifications', 'error')
+      }
+      setVerifications([])
+    } finally {
+      setVerificationsLoading(false)
+    }
+  }
+
+  const createVerification = async () => {
+    if (!newVerification.medicineId) return toast('Select a medicine', 'error')
+    if (!newVerification.standard) return toast('Enter a standard', 'error')
+    try {
+      setVerificationsLoading(true)
+      const checks = {
+        identity: newVerification.identity,
+        potency: newVerification.potency,
+        contamination: newVerification.contamination,
+      }
+      await api('/pharmacy/quality-verification', {
+        method: 'POST',
+        body: {
+          medicineId: newVerification.medicineId,
+          standard: newVerification.standard,
+          checks,
+          notes: newVerification.notes || undefined,
+        },
+      })
+      toast('Quality verification submitted', 'success')
+      setNewVerification({ ...newVerification, notes: '' })
+      setVerificationsLoaded(false)
+      await loadVerifications()
+      await loadDashboard()
+    } catch (err) {
+      if (String(err?.message || '') === 'biometric_verification_required') {
+        setBiometricVerified(false)
+        toast('Biometric verification required again. Please verify to continue.', 'warning')
+      } else {
+        toast(err.message || 'Failed to submit verification', 'error')
+      }
+    } finally {
+      setVerificationsLoading(false)
     }
   }
 
@@ -571,22 +805,309 @@ export default function PharmacistDashboard() {
 
             {activeTab === 'medicines' && (
               <div className="healthcare-card">
-                <h2>Medicines Management</h2>
-                <p style={{ color: 'var(--healthcare-text-muted)' }}>Medicine management functionality will be implemented here.</p>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                  <h2>Medicines</h2>
+                  <button onClick={loadMedicines} className="btn-secondary" disabled={medicinesLoading}>
+                    Refresh
+                  </button>
+                </div>
+
+                <div style={{ marginTop: '1rem' }} className="form-grid">
+                  <div className="form-group">
+                    <label className="form-label">Search</label>
+                    <input
+                      className="form-input"
+                      value={medicineSearch}
+                      onChange={(e) => setMedicineSearch(e.target.value)}
+                      placeholder="amoxicillin, paracetamol…"
+                    />
+                  </div>
+                  <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
+                    <button onClick={() => { setMedicinesLoaded(false); loadMedicines() }} className="btn-primary" disabled={medicinesLoading}>
+                      Search
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--healthcare-border)' }}>
+                  <h3 style={{ marginBottom: '0.75rem' }}>Add medicine</h3>
+                  <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                    <div className="form-group">
+                      <label className="form-label">Name *</label>
+                      <input className="form-input" value={newMedicine.name} onChange={(e) => setNewMedicine({ ...newMedicine, name: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Generic name</label>
+                      <input className="form-input" value={newMedicine.genericName} onChange={(e) => setNewMedicine({ ...newMedicine, genericName: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Manufacturer *</label>
+                      <input className="form-input" value={newMedicine.manufacturer} onChange={(e) => setNewMedicine({ ...newMedicine, manufacturer: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Category *</label>
+                      <input className="form-input" value={newMedicine.category} onChange={(e) => setNewMedicine({ ...newMedicine, category: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Strengths (comma)</label>
+                      <input className="form-input" value={newMedicine.strengths} onChange={(e) => setNewMedicine({ ...newMedicine, strengths: e.target.value })} placeholder="500mg, 250mg" />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Dosage forms (comma)</label>
+                      <input className="form-input" value={newMedicine.dosageForms} onChange={(e) => setNewMedicine({ ...newMedicine, dosageForms: e.target.value })} placeholder="Tablet, Capsule" />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(newMedicine.requiresPrescription)}
+                          onChange={(e) => setNewMedicine({ ...newMedicine, requiresPrescription: e.target.checked })}
+                        />
+                        <span>Requires prescription</span>
+                      </label>
+                    </div>
+                    <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
+                      <button onClick={createMedicine} className="btn-primary" disabled={medicinesLoading}>
+                        {medicinesLoading ? 'Saving…' : 'Add'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--healthcare-border)' }}>
+                  <h3 style={{ marginBottom: '0.75rem' }}>List</h3>
+                  {medicinesLoading ? (
+                    <p className="empty-state">Loading…</p>
+                  ) : medicines.length === 0 ? (
+                    <p className="empty-state">No medicines yet.</p>
+                  ) : (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '2px solid var(--healthcare-border)' }}>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Name</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Manufacturer</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Category</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Strengths</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {medicines.slice(0, 100).map((m) => (
+                            <tr key={m.id} style={{ borderBottom: '1px solid var(--healthcare-border)' }}>
+                              <td style={{ padding: '0.75rem' }}>
+                                <div style={{ fontWeight: 700 }}>{m.name}</div>
+                                <div style={{ fontFamily: 'monospace', color: 'var(--healthcare-text-muted)', fontSize: '0.8125rem' }}>{m.id}</div>
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>{m.manufacturer}</td>
+                              <td style={{ padding: '0.75rem' }}>{m.category}</td>
+                              <td style={{ padding: '0.75rem', color: 'var(--healthcare-text-muted)' }}>
+                                {(m.strengths || []).slice(0, 3).join(', ') || '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
             {activeTab === 'stock' && (
               <div className="healthcare-card">
-                <h2>Stock Management</h2>
-                <p style={{ color: 'var(--healthcare-text-muted)' }}>Stock management functionality will be implemented here.</p>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                  <h2>Stock</h2>
+                  <button onClick={loadStock} className="btn-secondary" disabled={stockLoading}>
+                    Refresh
+                  </button>
+                </div>
+
+                <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--healthcare-border)' }}>
+                  <h3 style={{ marginBottom: '0.75rem' }}>Add stock</h3>
+                  <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                    <div className="form-group">
+                      <label className="form-label">Medicine *</label>
+                      <select className="form-input" value={newStock.medicineId} onChange={(e) => setNewStock({ ...newStock, medicineId: e.target.value })}>
+                        <option value="">Select…</option>
+                        {medicines.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Quantity *</label>
+                      <input type="number" className="form-input" value={newStock.quantity} onChange={(e) => setNewStock({ ...newStock, quantity: e.target.value })} min="0" />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Expiry date *</label>
+                      <input type="date" className="form-input" value={newStock.expiryDate} onChange={(e) => setNewStock({ ...newStock, expiryDate: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Min stock level</label>
+                      <input type="number" className="form-input" value={newStock.minStockLevel} onChange={(e) => setNewStock({ ...newStock, minStockLevel: e.target.value })} min="0" />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Batch ID</label>
+                      <input className="form-input" value={newStock.batchId} onChange={(e) => setNewStock({ ...newStock, batchId: e.target.value })} placeholder="optional" />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Location</label>
+                      <input className="form-input" value={newStock.location} onChange={(e) => setNewStock({ ...newStock, location: e.target.value })} placeholder="Shelf A3" />
+                    </div>
+                    <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                      <label className="form-label">Notes</label>
+                      <input className="form-input" value={newStock.notes} onChange={(e) => setNewStock({ ...newStock, notes: e.target.value })} placeholder="optional" />
+                    </div>
+                    <div className="form-group">
+                      <button onClick={createStock} className="btn-primary" disabled={stockLoading}>
+                        {stockLoading ? 'Saving…' : 'Add'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--healthcare-border)' }}>
+                  <h3 style={{ marginBottom: '0.75rem' }}>List</h3>
+                  {stockLoading ? (
+                    <p className="empty-state">Loading…</p>
+                  ) : stockItems.length === 0 ? (
+                    <p className="empty-state">No stock items yet.</p>
+                  ) : (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '2px solid var(--healthcare-border)' }}>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Medicine</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Qty</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Status</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Expiry</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {stockItems.slice(0, 200).map((s) => (
+                            <tr key={s.id} style={{ borderBottom: '1px solid var(--healthcare-border)' }}>
+                              <td style={{ padding: '0.75rem' }}>
+                                <div style={{ fontWeight: 700 }}>{s.medicineName || s.medicineId}</div>
+                                <div style={{ fontFamily: 'monospace', color: 'var(--healthcare-text-muted)', fontSize: '0.8125rem' }}>{s.id}</div>
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>
+                                {s.quantity} {s.unit || ''}
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>
+                                <span className="status-badge">{s.status || '—'}</span>
+                              </td>
+                              <td style={{ padding: '0.75rem', fontFamily: 'monospace', color: 'var(--healthcare-text-muted)' }}>
+                                {s.expiryDate || '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
             {activeTab === 'quality' && (
               <div className="healthcare-card">
-                <h2>Quality Verification</h2>
-                <p style={{ color: 'var(--healthcare-text-muted)' }}>Quality verification functionality will be implemented here.</p>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                  <h2>Quality verification</h2>
+                  <button onClick={loadVerifications} className="btn-secondary" disabled={verificationsLoading}>
+                    Refresh
+                  </button>
+                </div>
+
+                <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--healthcare-border)' }}>
+                  <h3 style={{ marginBottom: '0.75rem' }}>Submit verification</h3>
+                  <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                    <div className="form-group">
+                      <label className="form-label">Medicine *</label>
+                      <select className="form-input" value={newVerification.medicineId} onChange={(e) => setNewVerification({ ...newVerification, medicineId: e.target.value })}>
+                        <option value="">Select…</option>
+                        {medicines.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Standard *</label>
+                      <input className="form-input" value={newVerification.standard} onChange={(e) => setNewVerification({ ...newVerification, standard: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Identity</label>
+                      <select className="form-input" value={newVerification.identity} onChange={(e) => setNewVerification({ ...newVerification, identity: e.target.value })}>
+                        <option value="pass">pass</option>
+                        <option value="fail">fail</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Potency</label>
+                      <select className="form-input" value={newVerification.potency} onChange={(e) => setNewVerification({ ...newVerification, potency: e.target.value })}>
+                        <option value="pass">pass</option>
+                        <option value="fail">fail</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Contamination</label>
+                      <select className="form-input" value={newVerification.contamination} onChange={(e) => setNewVerification({ ...newVerification, contamination: e.target.value })}>
+                        <option value="pass">pass</option>
+                        <option value="fail">fail</option>
+                      </select>
+                    </div>
+                    <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                      <label className="form-label">Notes</label>
+                      <input className="form-input" value={newVerification.notes} onChange={(e) => setNewVerification({ ...newVerification, notes: e.target.value })} placeholder="optional" />
+                    </div>
+                    <div className="form-group">
+                      <button onClick={createVerification} className="btn-primary" disabled={verificationsLoading}>
+                        {verificationsLoading ? 'Saving…' : 'Submit'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--healthcare-border)' }}>
+                  <h3 style={{ marginBottom: '0.75rem' }}>Recent verifications</h3>
+                  {verificationsLoading ? (
+                    <p className="empty-state">Loading…</p>
+                  ) : verifications.length === 0 ? (
+                    <p className="empty-state">No verifications yet.</p>
+                  ) : (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '2px solid var(--healthcare-border)' }}>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Time</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Medicine</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Standard</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 600 }}>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {verifications.slice(0, 200).map((v) => (
+                            <tr key={v.id} style={{ borderBottom: '1px solid var(--healthcare-border)' }}>
+                              <td style={{ padding: '0.75rem', color: 'var(--healthcare-text-muted)', fontSize: '0.875rem' }}>
+                                {v.verificationDate ? new Date(v.verificationDate).toLocaleString() : '—'}
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>
+                                <div style={{ fontFamily: 'monospace', color: 'var(--healthcare-text-muted)', fontSize: '0.8125rem' }}>{v.medicineId}</div>
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>{v.standard}</td>
+                              <td style={{ padding: '0.75rem' }}>
+                                <span className="status-badge">{v.overallStatus || '—'}</span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
