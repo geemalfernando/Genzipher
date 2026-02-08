@@ -8,6 +8,7 @@ export default function ForgotPassword() {
   const [otp, setOtp] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [resetMfa, setResetMfa] = useState(false)
   const [otpRequestId, setOtpRequestId] = useState(null)
   const [otpData, setOtpData] = useState(null)
   const [remainingAttempts, setRemainingAttempts] = useState(3)
@@ -108,7 +109,7 @@ export default function ForgotPassword() {
       setLoading(true)
       const data = await api('/auth/forgot-password/set-password', {
         method: 'POST',
-        body: { resetToken, newPassword },
+        body: { resetToken, newPassword, resetMfa },
       })
 
       if (data.ok) {
@@ -307,6 +308,20 @@ export default function ForgotPassword() {
                     required
                     minLength="8"
                   />
+                </div>
+
+                <div className="auth-form-group">
+                  <label className="form-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={resetMfa}
+                      onChange={(e) => setResetMfa(e.target.checked)}
+                    />
+                    <span>Also reset MFA</span>
+                  </label>
+                  <small className="auth-form-hint">
+                    Use this if you can’t complete MFA. If you also can’t access email later, an admin must help re-enable.
+                  </small>
                 </div>
 
                 <button type="submit" className="auth-btn-primary" disabled={loading}>

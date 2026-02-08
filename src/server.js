@@ -1408,7 +1408,7 @@ async function buildApp() {
   }));
 
   app.post("/auth/forgot-password/set-password", asyncRoute(async (req, res) => {
-    const { resetToken, newPassword } = req.body || {};
+    const { resetToken, newPassword, resetMfa } = req.body || {};
     if (!isNonEmptyString(resetToken) || !looksLikePassword(newPassword)) {
       return res.status(400).json({ error: "bad_request", message: "resetToken + newPassword required" });
     }
@@ -1427,7 +1427,13 @@ async function buildApp() {
       return res.status(403).json({ error: "password_reset_locked_admin_required" });
     }
 
-    await User.updateOne({ id: user.id }, { $set: { password: hashPasswordScrypt(newPassword) } });
+    const update = { password: hashPasswordScrypt(newPassword) };
+    const doResetMfa = Boolean(resetMfa);
+    if (doResetMfa) {
+      update.mfaEnabled = false;
+      update.mfaMethod = "NONE";
+    }
+    await User.updateOne({ id: user.id }, { $set: update });
 
     // Defensive: revoke trusted-device bypass tokens after password reset.
     await TrustedDevice.updateMany({ userId: user.id, revokedAt: null }, { $set: { revokedAt: new Date() } });
@@ -1435,7 +1441,7 @@ async function buildApp() {
     await auditAppend({
       actor: { userId: user.id, role: user.role, username: user.username },
       action: "auth.password_reset_completed",
-      details: { otpRequestId: payload.otpRequestId },
+      details: { otpRequestId: payload.otpRequestId, resetMfa: doResetMfa },
     });
 
     return res.json({ ok: true });
@@ -2516,6 +2522,66 @@ async function buildApp() {
     });
 
     return res.json({ ok: true, userId: user.id, username: user.username });
+  }));
+
+  // Admin: reset MFA for a user (used when user forgot BOTH password + email/MFA access)
+  app.post("/admin/mfa/reset", requireAuth, requireRole(["admin"]), asyncRoute(async (req, res) => {
+    const { userId, identifier } = req.body || {};
+    const id = isNonEmptyString(userId) ? String(userId).trim() : isNonEmptyString(identifier) ? String(identifier).trim() : "";
+    if (!isNonEmptyString(id)) return res.status(400).json({ error: "bad_request", message: "userId or identifier required" });
+
+    const user = await User.findOne({ $or: [{ id }, { username: id }, { email: id }] }).lean();
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+
+    await User.updateOne({ id: user.id }, { $set: { mfaEnabled: false, mfaMethod: "NONE" } });
+    await TrustedDevice.updateMany({ userId: user.id, revokedAt: null }, { $set: { revokedAt: new Date() } });
+
+    await auditAppend({
+      actor: { userId: req.auth.sub, role: req.auth.role, username: req.auth.username },
+      action: "admin.mfa_reset",
+      details: { targetUserId: user.id, targetRole: user.role, targetUsername: user.username },
+    });
+
+    return res.json({ ok: true, userId: user.id, username: user.username, role: user.role });
+  }));
+
+  // User: enable per-user MFA (Email OTP) for staff roles (doctor/pharmacy/manufacturer/admin)
+  app.post("/mfa/enable", requireAuth, asyncRoute(async (req, res) => {
+    const { method, email } = req.body || {};
+    const m = isNonEmptyString(method) ? String(method).trim().toUpperCase() : "EMAIL_OTP";
+    if (m !== "EMAIL_OTP") return res.status(400).json({ error: "unsupported_mfa_method" });
+
+    const user = await User.findOne({ id: req.auth.sub }).lean();
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+    if (user.role === "patient") {
+      // Keep patient-specific verification logic in /patients/enable-mfa
+      return res.status(400).json({ error: "use_patient_endpoint", message: "Use POST /patients/enable-mfa for patients." });
+    }
+
+    const nextEmail = isNonEmptyString(email) ? String(email).trim().toLowerCase() : null;
+    if (nextEmail && !looksLikeEmail(nextEmail)) return res.status(400).json({ error: "bad_request", message: "invalid email" });
+
+    if (isSmtpEnabled()) {
+      const effective = nextEmail || user.email;
+      if (!looksLikeEmail(effective) || String(effective).endsWith("@demo.local")) {
+        return res.status(400).json({
+          error: "mfa_email_missing",
+          message: "Provide a real email address to enable Email OTP MFA when SMTP is enabled.",
+        });
+      }
+    }
+
+    const update = { mfaEnabled: true, mfaMethod: "EMAIL_OTP" };
+    if (nextEmail) update.email = nextEmail;
+    await User.updateOne({ id: user.id }, { $set: update });
+
+    await auditAppend({
+      actor: { userId: user.id, role: user.role, username: user.username },
+      action: "user.mfa_enabled",
+      details: { method: "EMAIL_OTP", emailUpdated: Boolean(nextEmail) },
+    });
+
+    return res.json({ ok: true, method: "EMAIL_OTP" });
   }));
 
   // Admin: check SMTP connectivity/auth without sending an email
@@ -3807,6 +3873,16 @@ async function buildApp() {
 	  }));
 
   // --- Helpful demo data endpoints (read-only, authenticated) ---
+  // Current user (DB-backed)
+  app.get("/me", requireAuth, asyncRoute(async (req, res) => {
+    const user = await User.findOne(
+      { id: req.auth.sub },
+      { _id: 0, id: 1, username: 1, email: 1, role: 1, status: 1, mfaEnabled: 1, mfaMethod: 1, biometricEnrolled: 1, biometricEnrolledAt: 1 }
+    ).lean();
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+    return res.json({ user });
+  }));
+
   app.get("/demo/whoami", requireAuth, asyncRoute(async (req, res) => {
     res.json({ auth: req.auth });
   }));

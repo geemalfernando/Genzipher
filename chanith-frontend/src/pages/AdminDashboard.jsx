@@ -11,6 +11,7 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(false)
   const [user, setUser] = useState(null)
   const [activeSection, setActiveSection] = useState('dashboard')
+  const [mfaResetIdentifier, setMfaResetIdentifier] = useState('')
 
   // User Activity (Audit Logs)
   const [userActivity, setUserActivity] = useState({
@@ -71,8 +72,8 @@ export default function AdminDashboard() {
 
   const loadUserData = async () => {
     try {
-      const data = await api('/demo/whoami')
-      setUser(data.auth)
+      const data = await api('/me')
+      setUser(data.user)
     } catch (err) {
       toast(err.message, 'error')
       if (err.message.includes('unauthorized') || err.message.includes('token')) {
@@ -471,6 +472,23 @@ export default function AdminDashboard() {
     navigate('/login')
   }
 
+  const handleAdminResetMfa = async () => {
+    const id = String(mfaResetIdentifier || '').trim()
+    if (!id) return toast('Enter a username/email/userId', 'error')
+    const ok = window.confirm('Reset MFA for this user? They will need to re-enable MFA after login.')
+    if (!ok) return
+    try {
+      setLoading(true)
+      const out = await api('/admin/mfa/reset', { method: 'POST', body: { identifier: id } })
+      toast(`MFA reset for ${out.username || out.userId}`, 'success')
+      setMfaResetIdentifier('')
+    } catch (err) {
+      toast(err.message || 'MFA reset failed', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div className="patient-dashboard">
       <aside className="patient-sidebar">
@@ -690,6 +708,30 @@ export default function AdminDashboard() {
                     </table>
                   </div>
                 )}
+              </div>
+
+              {/* MFA reset (break-glass) */}
+              <div style={{ marginBottom: '2rem', paddingBottom: '2rem', borderBottom: '1px solid var(--healthcare-border)' }}>
+                <h3 style={{ marginBottom: '1rem', fontSize: '1.125rem', fontWeight: 600 }}>MFA reset (admin only)</h3>
+                <p style={{ color: 'var(--healthcare-text-muted)', marginTop: '0.25rem' }}>
+                  Use this only when a user forgot both password and email/MFA access.
+                </p>
+                <div className="form-grid" style={{ gridTemplateColumns: '1fr auto', gap: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">Username / email / userId</label>
+                    <input
+                      className="form-input"
+                      value={mfaResetIdentifier}
+                      onChange={(e) => setMfaResetIdentifier(e.target.value)}
+                      placeholder="doctor1 or u_doctor..."
+                    />
+                  </div>
+                  <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
+                    <button type="button" className="btn-danger" onClick={handleAdminResetMfa} disabled={loading}>
+                      Reset MFA
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Verify Patients Section */}

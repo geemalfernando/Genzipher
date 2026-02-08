@@ -92,12 +92,12 @@ export default function PharmacistDashboard() {
     try {
       setLoading(true)
       const [userData, biometricStatus, enrollStatus] = await Promise.all([
-        api('/demo/whoami'),
+        api('/me'),
         api('/pharmacy/biometric-status'),
         api('/biometric/status')
       ])
       
-      setUser(userData.auth)
+      setUser(userData.user)
       // IMPORTANT: do not rely on /demo/whoami for biometric enrollment.
       // /demo/whoami can be JWT-derived and may not include the latest DB flags.
       // /biometric/status reads DB and self-heals stale flags on the server.
